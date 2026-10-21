@@ -1,11 +1,11 @@
-<p align="center"><img src="icons/dark/crivo-128.png" width="96" alt="Crivo"></p>
-
-# Crivo
+<h1 align="center"><img src="docs/img/hero.en.svg" width="100%" alt="Crivo: every query goes through the sieve"></h1>
 
 <p align="center">
 <a href="https://github.com/JonathanSantos/crivo/releases/latest"><img src="https://img.shields.io/github/v/release/JonathanSantos/crivo?label=download&logo=github" alt="Download"></a>
 <a href="https://github.com/JonathanSantos/crivo/actions/workflows/ci.yml"><img src="https://github.com/JonathanSantos/crivo/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
 </p>
+
+<p align="center"><a href="#installation">Installation</a> · <a href="#workflow">Workflow</a> · <a href="#the-policy">Policy</a> · <a href="#commands">Commands</a> · <a href="#read-only-user-the-recommended-strategy">Read-only user</a> · <a href="#copilot-integration">Copilot</a> · <a href="#mcp-optional">MCP</a></p>
 
 **Download a prebuilt binary** ([all versions](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
 
@@ -18,6 +18,9 @@
 - **Errors that teach:** every refusal states the rule, the reason and what would be accepted.
 - **Optional MCP:** the same binary serves the policy as an MCP server (`vendas mcp`) for any AI client. CLI + skill remains the primary mode.
 
+<p align="center"><img src="docs/img/guard.en.svg" width="100%" alt="The path of a query: parse, policy, rewrite, re-check, execute and mask"></p>
+
+> [!WARNING]
 > The adversary is the AI, not a person. Anyone with access to the machine can pull the password from the keychain or tamper with the binary. Never use production credentials and do not distribute generated binaries.
 
 ## Installation
@@ -42,6 +45,8 @@ make build        # produces bin/crivo
 CI (`.github/workflows/ci.yml`) builds and tests natively on Linux, macOS and Windows on every push. A `vX.Y.Z` tag (`make tag TAG=vX.Y.Z`) triggers the `release` job, which publishes the binaries for the three platforms on GitHub Releases.
 
 ## Workflow
+
+<p align="center"><img src="docs/img/flow.en.svg" width="100%" alt="Crivo workflow, from crivo init to Copilot querying Postgres"></p>
 
 ```bash
 crivo init "postgres://svc_app@pg-hml.internal:5432/vendas?sslmode=verify-full"   # writes vendas.crivo, everything denied
@@ -106,6 +111,8 @@ Exit codes: `0` success, `1` bug, `2` refused by Crivo, `3` invalid SQL, `4` dat
 ## Read-only user: the recommended strategy
 
 The policy works on its own, but it is much stronger as a **second layer** on top of a least-privilege database user. Crivo helps on both ends:
+
+<p align="center"><img src="docs/img/layers.en.svg" width="100%" alt="Crivo defense layers"></p>
 
 1. **`crivo check` audits the connection user.** When it connects, it warns if the user is a superuser, owns tables, has `BYPASSRLS`, or can `INSERT/UPDATE/DELETE/TRUNCATE` beyond what the policy allows.
 2. **`crivo grants vendas.crivo` generates the SQL for the ideal user** from the policy itself: `GRANT SELECT` only on the allowed tables, `GRANT SELECT (columns)` where there is an `except` (the database itself then refuses `cpf`), `GRANT UPDATE (status, observacao)`, `DELETE` only where there is `delete`, `default_transaction_read_only = on` when the policy has no writes, `statement_timeout` on the role, and RLS suggestions for the `where` filters.

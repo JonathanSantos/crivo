@@ -1,11 +1,11 @@
-<p align="center"><img src="icons/dark/crivo-128.png" width="96" alt="Crivo"></p>
-
-# Crivo
+<h1 align="center"><img src="docs/img/hero.pt.svg" width="100%" alt="Crivo: toda query passa pelo crivo"></h1>
 
 <p align="center">
 <a href="https://github.com/JonathanSantos/crivo/releases/latest"><img src="https://img.shields.io/github/v/release/JonathanSantos/crivo?label=download&logo=github" alt="Download"></a>
 <a href="https://github.com/JonathanSantos/crivo/actions/workflows/ci.yml"><img src="https://github.com/JonathanSantos/crivo/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
 </p>
+
+<p align="center"><a href="#instalação">Instalação</a> · <a href="#fluxo">Fluxo</a> · <a href="#a-política">Política</a> · <a href="#comandos">Comandos</a> · <a href="#usuário-read-only-a-estratégia-recomendada">Usuário read-only</a> · <a href="#integração-com-o-copilot">Copilot</a> · <a href="#mcp-opcional">MCP</a></p>
 
 **Download do binário pronto** ([todas as versões](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
 
@@ -18,6 +18,9 @@
 - **Erros que ensinam:** toda recusa diz a regra, o motivo e o que seria aceito.
 - **MCP opcional:** o mesmo binário serve a política como servidor MCP (`vendas mcp`) para qualquer cliente de IA. O modo principal continua sendo CLI + skill.
 
+<p align="center"><img src="docs/img/guard.pt.svg" width="100%" alt="O caminho de uma query: parse, política, reescrita, re-checagem, execução e máscara"></p>
+
+> [!WARNING]
 > O adversário é a IA, não uma pessoa. Quem tem acesso à máquina consegue extrair a senha do keychain ou alterar o binário. Nunca use credenciais de produção e não distribua binários gerados.
 
 ## Instalação
@@ -42,6 +45,8 @@ make build        # gera bin/crivo
 O CI (`.github/workflows/ci.yml`) compila e testa nativamente em Linux, macOS e Windows a cada push. Uma tag `vX.Y.Z` (`make tag TAG=vX.Y.Z`) dispara o job `release`, que publica os binários das três plataformas no GitHub Releases.
 
 ## Fluxo
+
+<p align="center"><img src="docs/img/flow.pt.svg" width="100%" alt="Fluxo do Crivo, de crivo init até o Copilot consultando o Postgres"></p>
 
 ```bash
 crivo init "postgres://svc_app@pg-hml.interno:5432/vendas?sslmode=verify-full"   # gera vendas.crivo, tudo negado
@@ -106,6 +111,8 @@ Códigos de saída: `0` sucesso, `1` bug, `2` barrado pelo Crivo, `3` SQL invál
 ## Usuário read-only: a estratégia recomendada
 
 A política funciona sozinha, mas fica muito mais forte como **segunda camada** sobre um usuário de banco com privilégio mínimo. Por isso o Crivo ajuda nas duas pontas:
+
+<p align="center"><img src="docs/img/layers.pt.svg" width="100%" alt="Camadas de defesa do Crivo"></p>
 
 1. **`crivo check` audita o usuário de conexão.** Quando conecta ao banco, avisa se o usuário é superuser, dono de tabelas, tem `BYPASSRLS`, ou se pode `INSERT/UPDATE/DELETE/TRUNCATE` além do que a política permite.
 2. **`crivo grants vendas.crivo` gera o SQL do usuário ideal** a partir da própria política: `GRANT SELECT` só nas tabelas liberadas, `GRANT SELECT (colunas)` quando há `except` (o banco passa a recusar `cpf` sozinho), `GRANT UPDATE (status, observacao)`, `DELETE` só onde há `delete`, `default_transaction_read_only = on` quando a política não tem escrita, `statement_timeout` no papel, e sugestões de RLS para os filtros `where`.
