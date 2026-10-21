@@ -46,8 +46,10 @@ jobs:
       # /releases/latest/download/crivo-<os>-<arch> do README é estável.
       - name: Build
         run: |
+          # tr em vez de ${VAR,,}: o /bin/bash do macOS é 3.2 e não suporta
+          os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
-          go build -trimpath -ldflags "-s -w -X crivo/internal/cli.Version=${{ steps.ver.outputs.version }}" -o "dist/crivo-${RUNNER_OS,,}-$(go env GOARCH)${ext}" ./cmd/crivo
+          go build -trimpath -ldflags "-s -w -X crivo/internal/cli.Version=${{ steps.ver.outputs.version }}" -o "dist/crivo-${os}-$(go env GOARCH)${ext}" ./cmd/crivo
       - name: Smoke test do binário
         run: |
           bin=$(ls dist/crivo-*)
