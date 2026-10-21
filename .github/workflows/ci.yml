@@ -56,7 +56,9 @@ jobs:
           "$bin" version
           "$bin" check --offline examples/vendas.crivo
           "$bin" build --offline examples/vendas.crivo -o dist/vendas-smoke
-          dist/vendas-smoke* policy | head -3
+          # sem "| head" direto: com pipefail, o SIGPIPE do head vira exit 141
+          out=$(dist/vendas-smoke* policy)
+          echo "$out" | head -3
       # O runner macOS é arm64; o clang da Apple cross-compila x86_64 com cgo
       # sem toolchain extra (o Go passa -arch x86_64 sozinho).
       - name: Build macOS Intel

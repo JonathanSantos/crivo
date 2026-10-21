@@ -1,0 +1,8 @@
+# LF em todo texto, inclusive no checkout do Windows: os golden files
+# (.golden, SKILL.md) são comparados byte a byte com a saída gerada.
+* text=auto eol=lf
+
+*.png  binary
+*.ico  binary
+*.icns binary
+*.syso binary
