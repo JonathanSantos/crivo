@@ -1,0 +1,7 @@
+# binários: versione só o .crivo (não contém segredo); nunca o binário gerado
+/bin/
+/dist/
+*.exe
+/crivo
+/vendas
+internal/sqlguard/testdata/fuzz/

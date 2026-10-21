@@ -1,0 +1,13 @@
+ok_continuation.crivo:4:9: aviso: connect sem sslmode: aceito só porque o host localhost é local
+ok_continuation.crivo:9:1: aviso: functions libera funções da aplicação: elas podem ter efeito colateral (o READ ONLY ainda segura escrita em query)
+name=loja about="Loja \"teste\"" env=dev connect=postgresql://app@localhost/loja secret=env/LOJA_PW schema=vendas limit=100 timeout=1.5s functions=[minha_fn outra_fn]
+rule 13:1 pedidos deny=false doc="Pedidos com várias linhas de doc" body="read except(segredo) mask(email: hash, nome: partial), update(status) where status in ('a', 'b'), delete max 3"
+  action 13:9 read cols=[segredo] except=true where="" max=0 limit=0 masks=[{{14 14} email hash} {{14 27} nome partial}]
+  action 15:5 update cols=[status] except=false where="status in ('a', 'b')" max=0 limit=0 masks=[]
+  action 15:48 delete cols=[] except=false where="" max=3 limit=0 masks=[]
+rule 17:1 log_* deny=false doc="" body="read limit 10"
+  action 17:7 read cols=[] except=false where="" max=0 limit=10 masks=[]
+rule 18:1 log_auditoria_* deny=true doc="" body="deny"
+rule 19:1 outro.tabela deny=false doc="" body="read where coalesce(x, 1) > 0 and y = 'a,b', insert(a, b) max 2"
+  action 19:14 read cols=[] except=false where="coalesce(x, 1) > 0 and y = 'a,b'" max=0 limit=0 masks=[]
+  action 19:59 insert cols=[a b] except=false where="" max=2 limit=0 masks=[]

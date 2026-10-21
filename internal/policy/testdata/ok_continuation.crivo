@@ -1,0 +1,19 @@
+name    loja
+about   "Loja \"teste\""
+env     dev
+connect postgresql://app@localhost/loja
+secret  env:LOJA_PW
+schema  vendas
+limit   100 rows
+timeout 1500ms
+functions minha_fn, outra_fn
+
+## Pedidos
+## com várias linhas de doc
+pedidos read except(segredo)
+        mask(email: hash, nome: partial),
+    update(status) where status in ('a', 'b'), delete max 3
+
+log_* read limit 10
+log_auditoria_* deny
+outro.tabela read where coalesce(x, 1) > 0 and y = 'a,b', insert(a, b) max 2

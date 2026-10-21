@@ -1,0 +1,8 @@
+err_missing.crivo: erro: diretiva obrigatória ausente: name
+err_missing.crivo: erro: diretiva obrigatória ausente: about
+err_missing.crivo: erro: diretiva obrigatória ausente: env
+err_missing.crivo: erro: diretiva obrigatória ausente: connect
+err_missing.crivo:4:15: erro: ação read repetida na regra de pedidos
+err_missing.crivo:5:1: aviso: functions libera funções da aplicação: elas podem ter efeito colateral (o READ ONLY ainda segura escrita em query)
+err_missing.crivo:5:11: erro: função "pg_sleep" é sempre bloqueada e não pode ser liberada
+err_missing.crivo:5:21: erro: função "nextval" é sempre bloqueada e não pode ser liberada

@@ -1,0 +1,15 @@
+name=vendas about="Base do e-commerce B2B: pedidos, itens, clientes e pagamentos" env=preprod connect=postgres://svc_app@pg-hml.interno:5432/vendas?sslmode=verify-full secret=keychain/ schema=public limit=500 timeout=5s functions=[]
+rule 15:1 pedidos deny=false doc="Pedidos de venda. status: aberto | pago | enviado | cancelado" body="read, update(status, observacao) max 20"
+  action 15:17 read cols=[] except=false where="" max=0 limit=0 masks=[]
+  action 15:23 update cols=[status observacao] except=false where="" max=20 limit=0 masks=[]
+rule 18:1 pedido_itens deny=false doc="Itens de cada pedido; quantidade sempre > 0" body="read, insert, delete max 5"
+  action 18:17 read cols=[] except=false where="" max=0 limit=0 masks=[]
+  action 18:23 insert cols=[] except=false where="" max=0 limit=0 masks=[]
+  action 18:31 delete cols=[] except=false where="" max=5 limit=0 masks=[]
+rule 20:1 produtos deny=false doc="" body="read"
+  action 20:17 read cols=[] except=false where="" max=0 limit=0 masks=[]
+rule 23:1 clientes deny=false doc="Clientes PJ. CPF nunca sai do banco; email e telefone saem mascarados" body="read except(cpf) mask(email: partial, telefone: redact)"
+  action 23:17 read cols=[cpf] except=true where="" max=0 limit=0 masks=[{{23 39} email partial} {{23 55} telefone redact}]
+rule 26:1 pagamentos deny=false doc="Pagamentos confirmados (estornos ficam de fora)" body="read where status <> 'estornado'"
+  action 26:17 read cols=[] except=false where="status <> 'estornado'" max=0 limit=0 masks=[]
+rule 28:1 audit_* deny=true doc="" body="deny"

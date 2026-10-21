@@ -1,0 +1,14 @@
+err_syntax.crivo:1:9: erro: name precisa ter minúsculas, dígitos e hífen, começando por letra: "Vendas"
+err_syntax.crivo:2:9: erro: esperava texto entre aspas duplas
+err_syntax.crivo:2:9: erro: texto inesperado depois de about: "sem aspas"
+err_syntax.crivo:3:9: erro: env precisa ser dev, preprod ou prod: "staging"
+err_syntax.crivo:4:9: erro: connect não pode conter senha; grave-a com: crivo secret set <name>
+err_syntax.crivo:4:9: erro: connect precisa de sslmode=verify-full (ou verify-ca): sem ele a conexão pode cair para texto puro e expor a senha
+err_syntax.crivo:5:9: erro: limit precisa de um inteiro positivo: "abc"
+err_syntax.crivo:6:15: erro: ação desconhecida "drop" (use read, insert, update, delete ou deny)
+err_syntax.crivo:7:26: erro: esperava ':' depois de "email" em mask (ex.: email: partial)
+err_syntax.crivo:8:21: erro: parênteses não fechados no where
+err_syntax.crivo:10:7: erro: max só vale para insert, update e delete (para leitura use limit)
+err_syntax.crivo:10:19: erro: delete não aceita lista de colunas
+err_syntax.crivo:10:44: erro: where não se aplica a insert
+err_syntax.crivo:11:1: erro: regra repetida para itens (primeira na linha 10)

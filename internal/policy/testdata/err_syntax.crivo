@@ -1,0 +1,11 @@
+name    Vendas
+about   sem aspas
+env     staging
+connect postgres://u:senha@h/db
+limit   abc rows
+pedidos read, drop
+clientes read mask(email partial)
+produtos read where (a = 1
+  continua sem regra antes?
+itens read max 5, delete(id), insert where x = 1
+itens read

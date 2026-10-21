@@ -1,0 +1,28 @@
+# vendas.crivo
+
+name    vendas
+about   "Base do e-commerce B2B: pedidos, itens, clientes e pagamentos"
+env     preprod
+
+connect postgres://svc_app@pg-hml.interno:5432/vendas?sslmode=verify-full
+secret  keychain
+schema  public
+
+limit   500 rows
+timeout 5s
+
+## Pedidos de venda. status: aberto | pago | enviado | cancelado
+pedidos         read, update(status, observacao) max 20
+
+## Itens de cada pedido; quantidade sempre > 0
+pedido_itens    read, insert, delete max 5
+
+produtos        read
+
+## Clientes PJ. CPF nunca sai do banco; email e telefone saem mascarados
+clientes        read except(cpf) mask(email: partial, telefone: redact)
+
+## Pagamentos confirmados (estornos ficam de fora)
+pagamentos      read where status <> 'estornado'
+
+audit_*         deny

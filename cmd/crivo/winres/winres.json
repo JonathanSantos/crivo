@@ -1,0 +1,42 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": "../../../icons/dark/crivo.ico"
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "Crivo",
+          "version": "0.1.0.0"
+        },
+        "description": "Crivo: acesso local e validado a Postgres de pré-produção",
+        "minimum-os": "win7",
+        "execution-level": "as invoker",
+        "dpi-awareness": "system",
+        "long-path-aware": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.1.0.0",
+          "product_version": "0.1.0.0"
+        },
+        "info": {
+          "0409": {
+            "FileDescription": "Crivo",
+            "FileVersion": "0.1.0",
+            "InternalName": "crivo",
+            "OriginalFilename": "crivo.exe",
+            "ProductName": "Crivo",
+            "ProductVersion": "0.1.0"
+          }
+        }
+      }
+    }
+  }
+}
