@@ -1,6 +1,10 @@
 # Crivo: build, testes e ícone do Windows.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)
 LDFLAGS := -s -w -X crivo/internal/cli.Version=$(VERSION)
+# Windows: estático, sem depender do libwinpthread-1.dll do MinGW
+ifeq ($(OS),Windows_NT)
+LDFLAGS += -extldflags=-static
+endif
 
 .PHONY: build test test-integration fuzz winres vet clean tag
 

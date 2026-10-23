@@ -48,8 +48,20 @@ jobs:
         run: |
           # tr em vez de ${VAR,,}: o /bin/bash do macOS é 3.2 e não suporta
           os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
-          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
-          go build -trimpath -ldflags "-s -w -X crivo/internal/cli.Version=${{ steps.ver.outputs.version }}" -o "dist/crivo-${os}-$(go env GOARCH)${ext}" ./cmd/crivo
+          ext=""; extld=""
+          # Windows: linka estático para não depender do libwinpthread-1.dll do MinGW,
+          # que não existe numa máquina comum (o exe sai calado com 0xC0000135)
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; extld="-extldflags=-static"; fi
+          go build -trimpath -ldflags "-s -w $extld -X crivo/internal/cli.Version=${{ steps.ver.outputs.version }}" -o "dist/crivo-${os}-$(go env GOARCH)${ext}" ./cmd/crivo
+      # O PATH do runner tem o mingw64\bin, então o smoke test passaria mesmo com
+      # DLL faltando: confere a tabela de imports em vez de confiar na execução.
+      - name: Sem DLL do MinGW
+        if: runner.os == 'Windows'
+        run: |
+          objdump -p dist/crivo-windows-*.exe | grep "DLL Name"
+          if objdump -p dist/crivo-windows-*.exe | grep -iE "DLL Name: lib"; then
+            echo "o exe depende de DLL do MinGW"; exit 1
+          fi
       - name: Smoke test do binário
         run: |
           bin=$(ls dist/crivo-*)
