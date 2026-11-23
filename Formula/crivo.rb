@@ -2,23 +2,26 @@
 class Crivo < Formula
   desc "CLI de acesso a Postgres governado por um arquivo de política"
   homepage "https://github.com/JonathanSantos/crivo"
-  version "0.1.4"
+  version "0.2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/JonathanSantos/crivo/releases/download/v0.1.4/crivo-macos-arm64"
-      sha256 "6e25a9fd4ae6c19a07e42c50c0c89e0550419d869ad46b53173bf6d32ef4a13a"
+      url "https://github.com/JonathanSantos/crivo/releases/download/v0.2.0/crivo-macos-arm64"
+      sha256 "07ba8d6eb2a150f047ba169c99e1b5d9e6b1310905059d214ce3ef3e57566a47"
     else
-      url "https://github.com/JonathanSantos/crivo/releases/download/v0.1.4/crivo-macos-amd64"
-      sha256 "2de0dc434689cda49bf42372e0258a9fa1efbe0edcaf133e2e037bbf3c8f2183"
+      url "https://github.com/JonathanSantos/crivo/releases/download/v0.2.0/crivo-macos-amd64"
+      sha256 "175db6aee8ff617e302cb7a7bca8f3b150ec38e65b30d2f2ebab736529401629"
     end
   end
 
   on_linux do
-    depends_on arch: :x86_64
-
-    url "https://github.com/JonathanSantos/crivo/releases/download/v0.1.4/crivo-linux-amd64"
-    sha256 "06087bc89347fec7d15a991b782bdf1ceb390aa844bce50139f4603e407632f7"
+    if Hardware::CPU.arm?
+      url "https://github.com/JonathanSantos/crivo/releases/download/v0.2.0/crivo-linux-arm64"
+      sha256 "b85799d539fc241acd4cb62b5f6f0c5d9690348c26695d615de103872e60fc77"
+    else
+      url "https://github.com/JonathanSantos/crivo/releases/download/v0.2.0/crivo-linux-amd64"
+      sha256 "b637e851c8bb7dc04ed47a7c769a94c9ca6b22dd63309f92a73c0b74bed81712"
+    end
   end
 
   def install
