@@ -949,7 +949,19 @@ func (a *analyzer) selectStmt(sel *pg_query.SelectStmt, outer *scope, ctes *cteE
 	}
 
 	// DISTINCT / DISTINCT ON
-	if !(len(sel.DistinctClause) == 1 && sel.DistinctClause[0].Node == nil) {
+	if len(sel.DistinctClause) == 1 && sel.DistinctClause[0].Node == nil {
+		// DISTINCT simples compara os valores originais de todas as colunas
+		// de saída: com máscara partial ou redact, duas linhas iguais ou
+		// diferentes revelariam se os valores escondidos coincidem. Mesma
+		// regra do GROUP BY (hash é estável na execução e passa).
+		for _, c := range cols {
+			label := c.label
+			if label == "" {
+				label = c.name
+			}
+			a.checkColumn(c, useGroup, label)
+		}
+	} else {
 		for _, d := range sel.DistinctClause {
 			a.groupItem(s, ctes, d, cols)
 		}

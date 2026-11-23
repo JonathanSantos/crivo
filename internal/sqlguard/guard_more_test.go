@@ -705,3 +705,22 @@ func TestFixedLeaks(t *testing.T) {
 		{cmd: CmdExec, sql: "INSERT INTO pedidos (id, status) VALUES (1, 'x') ON CONFLICT (id) DO UPDATE SET status = 'y'", ok: true, want: "DO UPDATE SET status = 'y'"},
 	})
 }
+
+// DISTINCT simples compara os valores originais: com máscara partial ou
+// redact, o número de linhas revelaria se dois valores escondidos são iguais.
+// Segue a regra do GROUP BY e do DISTINCT ON (hash passa).
+func TestDistinctOnMaskedColumns(t *testing.T) {
+	runGuardCases(t, testGuard(t), []guardCase{
+		{sql: "SELECT DISTINCT email FROM clientes", want: masked},
+		{sql: "SELECT DISTINCT * FROM clientes", want: masked},
+		{sql: "SELECT DISTINCT cidade, telefone FROM clientes", want: "mascarada (redact)"},
+		{sql: "SELECT e FROM (SELECT DISTINCT email AS e FROM clientes) s", want: masked},
+		{sql: "WITH x AS (SELECT email FROM clientes) SELECT DISTINCT email FROM x", want: masked},
+		{sql: "SELECT DISTINCT nome, cidade FROM clientes", ok: true, want: "SELECT DISTINCT nome, cidade FROM clientes"},
+		{sql: "SELECT DISTINCT status FROM pagamentos", ok: true, want: "SELECT DISTINCT status", filters: 1},
+	})
+	hashed := customGuard(t, "clientes read except(cpf) mask(email: hash)\n")
+	runGuardCases(t, hashed, []guardCase{
+		{sql: "SELECT DISTINCT email FROM clientes", ok: true, want: "SELECT DISTINCT email FROM clientes", masks: []maskWant{{0, policy.MaskHash}}},
+	})
+}

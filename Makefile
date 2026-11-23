@@ -40,6 +40,6 @@ clean:
 #   make tag TAG=v0.2.0
 tag:
 	@case "$(TAG)" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "uso: make tag TAG=vX.Y.Z"; exit 1;; esac
-	@test -z "$$(git status --porcelain)" || { echo "árvore suja: commite antes de taguear"; exit 1; }
+	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "árvore suja: commite antes de taguear"; exit 1; }
 	git tag -a "$(TAG)" -m "$(TAG)"
 	git push origin main "$(TAG)"

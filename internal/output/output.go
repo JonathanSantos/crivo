@@ -324,7 +324,9 @@ func WriteMessage(w io.Writer, m Message, asJSON bool) {
 		}
 		fmt.Fprintln(w, "  regra   "+line)
 	}
-	fmt.Fprintln(w, "  motivo  "+m.Reason)
+	if m.Reason != "" {
+		fmt.Fprintln(w, "  motivo  "+m.Reason)
+	}
 	if m.Accepted != "" {
 		fmt.Fprintln(w, "  aceito  "+m.Accepted)
 	}
