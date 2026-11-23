@@ -122,8 +122,18 @@ func maskText(m policy.Mask) string {
 		return m.Column + " sai como ***"
 	case policy.MaskHash:
 		return m.Column + " sai como hash curto (h:…), estável só dentro de uma execução"
+	case policy.MaskEmail:
+		return m.Column + " sai só com o domínio (***@dominio)"
+	case policy.MaskLast4:
+		return m.Column + " sai só com os 4 últimos caracteres"
+	case policy.MaskMonth:
+		return m.Column + " sai só com ano e mês (AAAA-MM)"
+	case policy.MaskBucket:
+		return fmt.Sprintf("%s sai como faixa de %d (ex.: 1800..1900)", m.Column, m.Arg)
+	case policy.MaskPseudonym:
+		return m.Column + " sai como pseudônimo (p:…), o mesmo para o mesmo valor em qualquer execução"
 	}
-	return ""
+	return m.Column + " sai como ***"
 }
 
 func writeText(r *policy.Rule) string {
@@ -217,9 +227,17 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 		w("- %s: executa leitura. Saída em TSV com cabeçalho.\n", code(bin+` query "<SELECT>"`))
 		w("- %s: plano da query, sem executar.\n", code(bin+` explain "<SELECT>"`))
 	}
+	if len(p.Queries) > 0 {
+		w("- %s: roda uma consulta pronta da política (sem nome, lista as consultas).\n", code(bin+" run <consulta> nome=valor ..."))
+	}
 	if p.HasWrite() {
 		w("- %s: simula uma escrita.\n", code(bin+` exec "<INSERT|UPDATE|DELETE>" --dry-run`))
-		w("- %s: executa a escrita (pede confirmação ao usuário).\n", code(bin+` exec "<INSERT|UPDATE|DELETE>"`))
+		if p.ApprovalWrites {
+			w("- %s: registra a escrita como pendente; só o usuário a executa, com %s.\n", code(bin+` exec "<INSERT|UPDATE|DELETE>"`), code(bin+" approve <id>"))
+			w("- %s: lista as escritas pendentes.\n", code(bin+" pending"))
+		} else {
+			w("- %s: executa a escrita (pede confirmação ao usuário).\n", code(bin+` exec "<INSERT|UPDATE|DELETE>"`))
+		}
 	}
 	w("- %s: a política completa, com a lista de funções liberadas.\n", code(bin+" policy"))
 	w("\nPara SQL com aspas ou várias linhas, grave num arquivo e use %s. Para saída em JSON, use %s.\n\n", code("-f arquivo.sql"), code("--format json"))
@@ -255,7 +273,7 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 		}
 		for _, m := range rd.Masks {
 			masked = append(masked, code(r.Label()+"."+m.Column))
-			if m.Mode == policy.MaskHash {
+			if m.Mode.EqualityStable() {
 				hashed = append(hashed, code(r.Label()+"."+m.Column))
 			}
 		}
@@ -268,7 +286,7 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 	if len(masked) > 0 {
 		w("- Colunas mascaradas (%s) só podem aparecer na lista do SELECT, sem funções em volta, e não podem ser usadas em WHERE, JOIN, ORDER BY ou GROUP BY.", joinPT(masked))
 		if len(hashed) > 0 {
-			w(" As com hash (%s) também podem ir em GROUP BY e em count(DISTINCT ...).", joinPT(hashed))
+			w(" As com hash ou pseudonym (%s) também podem ir em GROUP BY, DISTINCT e count(DISTINCT ...).", joinPT(hashed))
 		}
 		w("\n")
 	}
@@ -281,7 +299,36 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 	if p.HasWrite() {
 		w("- UPDATE e DELETE exigem WHERE com uma coluna da tabela; INSERT exige a lista de colunas. Escritas sem teto explícito afetam no máximo %d linhas; acima do teto o Crivo desfaz tudo.\n", policy.DefaultMaxRows)
 	}
+	if p.MaxCost > 0 {
+		w("- Queries com custo estimado (EXPLAIN) acima de %.0f são recusadas antes de executar: filtre por colunas indexadas e agregue.\n", p.MaxCost)
+	}
+	if p.RatePerMinute > 0 {
+		w("- No máximo %d execuções por minuto.\n", p.RatePerMinute)
+	}
+	if p.QuotaRowsDay > 0 {
+		w("- No máximo %d linhas por dia, somando leituras e escritas: agregue no banco em vez de trazer linhas.\n", p.QuotaRowsDay)
+	}
+	if !p.Expires.IsZero() {
+		w("- O acesso vale até %s.\n", p.Expires.AddDate(0, 0, -1).Format("2006-01-02"))
+	}
 	w("\n")
+
+	if len(p.Queries) > 0 {
+		w("## Consultas prontas\n\n")
+		w("Prefira estas a escrever o SQL: elas já foram revisadas para esta base.\n\n")
+		for _, q := range p.Queries {
+			var ps []string
+			for _, prm := range q.Params {
+				ps = append(ps, prm.Name+"="+"<"+string(prm.Type)+">")
+			}
+			line := code(strings.TrimSpace(bin + " run " + q.Name + " " + strings.Join(ps, " ")))
+			if q.Doc != "" {
+				line += ": " + q.Doc
+			}
+			w("- %s\n", line)
+		}
+		w("\n")
+	}
 
 	w("## Como trabalhar\n\n")
 	w("1. Rode %s antes de consultar uma tabela pela primeira vez.\n", code(bin+" describe <tabela>"))
@@ -296,7 +343,11 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 		w("## Escrita\n\n")
 		w("1. Rode sempre %s primeiro.\n", code(bin+` exec "..." --dry-run`))
 		w("2. Mostre ao usuário o SQL e o número de linhas afetadas.\n")
-		w("3. Só rode o %s real depois da confirmação dele.\n\n", code("exec"))
+		if p.ApprovalWrites {
+			w("3. O %s real não grava: ele devolve um id de pendência (código de saída 6). Passe o id ao usuário e peça que ele rode %s no terminal. Nunca rode approve você mesmo.\n\n", code("exec"), code(bin+" approve <id>"))
+		} else {
+			w("3. Só rode o %s real depois da confirmação dele.\n\n", code("exec"))
+		}
 	}
 
 	w("## Nunca faça\n\n")
@@ -369,8 +420,8 @@ func DescribeColumns(r *policy.Rule, t *schema.Table) []ColumnInfo {
 			keys = append(keys, "FK → "+fk.RefTable+"."+strings.Join(fk.RefColumns, ","))
 		}
 		ci.Key = strings.Join(keys, ", ")
-		if m := rd.MaskOf(c.Name); m != "" {
-			ci.Mask = string(m)
+		if m, ok := rd.MaskFor(c.Name); ok {
+			ci.Mask = m.Text()
 		}
 		if !rd.AllowsCol(c.Name) {
 			ci.Mask = "só escrita"
@@ -402,10 +453,20 @@ func VSCodeSettings(p *policy.Policy, bin string) string {
 	if p.HasRead() {
 		read = append(read, "query", "explain")
 	}
+	if len(p.Queries) > 0 {
+		read = append(read, "run")
+	}
+	if p.ApprovalWrites && p.HasWrite() {
+		read = append(read, "pending")
+	}
 	read = append(read, "refresh")
 	items := []kv{{"/^" + q + " (" + strings.Join(read, "|") + `)\b/`, true}}
 	if p.HasWrite() {
 		items = append(items, kv{"/^" + q + " exec " + dryRunArg + ` --dry-run$/`, true}, kv{"/^" + q + ` exec\b/`, false})
+		if p.ApprovalWrites {
+			// approve executa de verdade: sempre com o clique de quem está no terminal
+			items = append(items, kv{"/^" + q + ` approve\b/`, false})
+		}
 	}
 	var b strings.Builder
 	b.WriteString(`"chat.tools.terminal.autoApprove": {` + "\n")

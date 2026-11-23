@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
@@ -447,7 +448,7 @@ func TestInitTextIsAValidDenyAllPolicy(t *testing.T) {
 	if len(got.Rules) != 0 {
 		t.Errorf("o init deveria nascer sem regras ativas, tem %d", len(got.Rules))
 	}
-	if !strings.Contains(text, "#   colunas: id, nome, cpf, email, telefone, cidade\n## Clientes PJ\n# clientes      deny") {
+	if !strings.Contains(text, "#   colunas: id, nome, cpf, email, telefone, cidade\n#   sugestão: read except(cpf) mask(nome: pseudonym, email: email, telefone: last4)\n## Clientes PJ\n# clientes      deny") {
 		t.Errorf("bloco de clientes inesperado:\n%s", text)
 	}
 }
@@ -493,5 +494,123 @@ func TestSameFile(t *testing.T) {
 		if got := sameFile(c.a, real); got != c.want {
 			t.Errorf("%s: sameFile(%q) = %v, esperava %v", c.name, c.a, got, c.want)
 		}
+	}
+}
+
+// ---------- dado pessoal exposto e trava de colunas ----------
+
+func TestCheckWarnsAboutExposedPersonalData(t *testing.T) {
+	testenv.Isolate(t)
+	_, out, _ := runTool(t, "check", vendasPolicy, "--schema-sql", vendasDDL)
+	// o exemplo mascara email e telefone e tira o cpf, mas deixa o nome nu
+	if !strings.Contains(out, "clientes.nome parece nome de pessoa e sai sem máscara; sugestão: mask(nome: pseudonym)") {
+		t.Errorf("faltou o aviso do nome:\n%s", out)
+	}
+	for _, never := range []string{"clientes.cpf parece", "clientes.email parece", "produtos.nome parece"} {
+		if strings.Contains(out, never) {
+			t.Errorf("aviso indevido %q:\n%s", never, out)
+		}
+	}
+	_, out, _ = runTool(t, "check", "testdata/checks.crivo", "--schema-sql", vendasDDL)
+	if !strings.Contains(out, "clientes.cpf parece documento e sai sem máscara; sugestão: except(cpf)") {
+		t.Errorf("faltou o aviso do cpf exposto:\n%s", out)
+	}
+}
+
+// A trava guarda as colunas expostas; uma coluna nova numa regra sem lista
+// de colunas aparece como aviso até a pessoa revisar e regravar.
+func TestLockDetectsNewlyExposedColumns(t *testing.T) {
+	testenv.Isolate(t)
+	dir := t.TempDir()
+	pol := writeFile(t, dir, "vendas.crivo", mustRead(t, vendasPolicy))
+	code, out, errOut := runTool(t, "check", pol, "--schema-sql", vendasDDL, "--lock")
+	if code != output.ExitOK || !strings.Contains(out, "✓ trava gravada em "+pol+".lock") {
+		t.Fatalf("--lock: código %d\n%s%s", code, out, errOut)
+	}
+	lock := mustRead(t, pol+".lock")
+	if !strings.Contains(lock, `"public.clientes": [`) || strings.Contains(lock, `"cpf"`) || strings.Contains(lock, "audit_log") {
+		t.Fatalf("trava inesperada:\n%s", lock)
+	}
+	if _, out, _ = runTool(t, "check", pol, "--schema-sql", vendasDDL); strings.Contains(out, "desde a última trava") {
+		t.Fatalf("sem mudança não pode avisar:\n%s", out)
+	}
+	ddl := strings.Replace(mustRead(t, vendasDDL), "  cidade text\n);", "  cidade text,\n  rg text\n);", 1)
+	changed := writeFile(t, dir, "schema2.sql", ddl)
+	_, out, _ = runTool(t, "check", pol, "--schema-sql", changed)
+	if !strings.Contains(out, "coluna(s) exposta(s) desde a última trava: public.clientes.rg") || !strings.Contains(out, "clientes.rg parece documento") {
+		t.Fatalf("coluna nova sem aviso:\n%s", out)
+	}
+	// o build roda o mesmo check e mostra o aviso também
+	_, out, _ = runTool(t, "build", pol, "--schema-sql", changed, "-o", filepath.Join(dir, "saida"))
+	if !strings.Contains(out, "desde a última trava") {
+		t.Errorf("build sem o aviso da trava:\n%s", out)
+	}
+	// --lock sem schema não grava nada
+	if code, _, errOut := runTool(t, "check", pol, "--offline", "--lock"); code != output.ExitConfig || !strings.Contains(errOut, "--lock precisa do schema") {
+		t.Errorf("--lock offline sem cache: código %d\n%s", code, errOut)
+	}
+}
+
+// check --json é o contrato da extensão do VS Code.
+func TestCheckJSONContract(t *testing.T) {
+	testenv.Isolate(t)
+	code, out, _ := runTool(t, "check", "testdata/checks.crivo", "--schema-sql", vendasDDL, "--json")
+	var got struct {
+		File        string `json:"file"`
+		OK          bool   `json:"ok"`
+		Note        string `json:"note"`
+		Diagnostics []struct {
+			Line, Col         int
+			Severity, Message string
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || code != output.ExitConfig {
+		t.Fatalf("código %d, JSON inválido (%v):\n%s", code, err, out)
+	}
+	if got.OK || !strings.HasSuffix(got.File, "checks.crivo") || !strings.Contains(got.Note, "DDL") {
+		t.Errorf("cabeçalho inesperado: %+v", got)
+	}
+	found := false
+	for _, d := range got.Diagnostics {
+		if d.Line == 8 && d.Col == 1 && d.Severity == "error" && strings.Contains(d.Message, `"fantasma" não existe`) {
+			found = true
+		}
+		if d.Severity != "error" && d.Severity != "warning" {
+			t.Errorf("severidade fora do contrato: %+v", d)
+		}
+	}
+	if !found {
+		t.Errorf("diagnóstico da linha 8 ausente: %+v", got.Diagnostics)
+	}
+	code, out, _ = runTool(t, "check", vendasPolicy, "--schema-sql", vendasDDL, "--json")
+	if code != output.ExitOK || !strings.Contains(out, `"ok":true`) {
+		t.Errorf("política válida: código %d\n%s", code, out)
+	}
+}
+
+// Consulta nomeada que o guard recusaria não passa no check.
+func TestCheckValidatesNamedQueries(t *testing.T) {
+	testenv.Isolate(t)
+	dir := t.TempDir()
+	src := strings.Replace(mustRead(t, vendasPolicy), "timeout 5s\n",
+		"timeout 5s\nquery boa(id int) \"SELECT id, status FROM pedidos WHERE id = $1\"\nquery vaza(id int) \"SELECT cpf FROM clientes WHERE id = $1\"\n", 1)
+	pol := writeFile(t, dir, "q.crivo", src)
+	code, out, _ := runTool(t, "check", pol, "--schema-sql", vendasDDL)
+	if code != output.ExitConfig || !strings.Contains(out, `query vaza seria barrada pelo crivo: coluna "cpf" não está liberada`) || strings.Contains(out, "query boa") {
+		t.Fatalf("código %d\n%s", code, out)
+	}
+}
+
+// examples/recursos.crivo documenta todos os recursos opcionais: ele precisa
+// continuar válido e com as consultas prontas aceitas pelo guard.
+func TestFeatureShowcasePolicyIsValid(t *testing.T) {
+	testenv.Isolate(t)
+	code, out, errOut := runTool(t, "check", "../../../examples/recursos.crivo", "--schema-sql", vendasDDL)
+	if code != output.ExitOK || strings.Contains(out, "erro") {
+		t.Fatalf("código %d\n%s%s", code, out, errOut)
+	}
+	p := testenv.LoadPolicy(t, "../../../examples/recursos.crivo")
+	if p.Expires.IsZero() || p.MaxCost == 0 || p.RatePerMinute == 0 || p.QuotaRowsDay == 0 || !p.ApprovalWrites || len(p.Queries) != 2 {
+		t.Errorf("o exemplo deixou de mostrar algum recurso: %+v", p)
 	}
 }

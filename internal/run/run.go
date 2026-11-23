@@ -5,9 +5,11 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -36,6 +38,17 @@ func (e *TooManyRows) Error() string {
 	return fmt.Sprintf("a escrita afetaria %d linhas; o máximo da regra é %d", e.Affected, e.Max)
 }
 
+// TooCostly é a query cujo custo estimado pelo planner passa do teto da
+// política (diretiva cost); nada foi executado.
+type TooCostly struct {
+	Cost float64
+	Max  float64
+}
+
+func (e *TooCostly) Error() string {
+	return fmt.Sprintf("custo estimado %.0f passa do teto %.0f da política", e.Cost, e.Max)
+}
+
 // DBError é um erro do banco (código de saída 4).
 type DBError struct {
 	Err error
@@ -43,6 +56,21 @@ type DBError struct {
 
 func (e *DBError) Error() string { return e.Err.Error() }
 func (e *DBError) Unwrap() error { return e.Err }
+
+var quotedRe = regexp.MustCompile(`"[^"]*"|'[^']*'`)
+
+// SafeMessage é o texto do erro para a IA e para a auditoria. Em erros de
+// dado (SQLSTATE 22) e de restrição (23) o Postgres cita o valor, que pode
+// vir de uma linha escondida pelo filtro ou de uma coluna mascarada: o que
+// está entre aspas sai cortado.
+func SafeMessage(err error) string {
+	msg := err.Error()
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && (strings.HasPrefix(pg.Code, "22") || strings.HasPrefix(pg.Code, "23")) {
+		return quotedRe.ReplaceAllString(msg, `"…"`)
+	}
+	return msg
+}
 
 // SchemaChanged diz se o erro indica coluna ou tabela inexistente (cache velho).
 func SchemaChanged(err error) bool {
@@ -169,9 +197,37 @@ func collect(rows pgx.Rows, cap int) (*Result, error) {
 
 var textFormat = pgx.QueryResultFormats{pgx.TextFormatCode}
 
+// checkCost pede o plano ao Postgres (sem executar) e recusa se o custo
+// total estimado passar do teto da política.
+func checkCost(ctx context.Context, tx pgx.Tx, p *policy.Policy, sql string) error {
+	if p.MaxCost <= 0 {
+		return nil
+	}
+	var raw string
+	if err := tx.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+sql, textFormat).Scan(&raw); err != nil {
+		return &DBError{err}
+	}
+	var plans []struct {
+		Plan struct {
+			TotalCost float64 `json:"Total Cost"`
+		} `json:"Plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &plans); err != nil || len(plans) == 0 {
+		return &DBError{fmt.Errorf("plano do EXPLAIN ilegível: %v", err)}
+	}
+	if c := plans[0].Plan.TotalCost; c > p.MaxCost {
+		return &TooCostly{Cost: c, Max: p.MaxCost}
+	}
+	return nil
+}
+
 // Query executa um SELECT em transação READ ONLY e sempre faz rollback.
 // cap é o teto de linhas; o SQL já vem com LIMIT cap+1.
 func Query(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string, cap int) (*Result, error) {
+	return query(ctx, conn, p, sql, cap, true)
+}
+
+func query(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string, cap int, costCheck bool) (*Result, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, &DBError{err}
@@ -179,6 +235,11 @@ func Query(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string, ca
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if err := setLocal(ctx, tx, p); err != nil {
 		return nil, err
+	}
+	if costCheck {
+		if err := checkCost(ctx, tx, p, sql); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := tx.Query(ctx, sql, textFormat)
 	if err != nil {
@@ -189,7 +250,7 @@ func Query(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string, ca
 
 // Explain devolve o plano (EXPLAIN sem ANALYZE) de um SELECT validado.
 func Explain(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string) (*Result, error) {
-	return Query(ctx, conn, p, "EXPLAIN "+sql, -1)
+	return query(ctx, conn, p, "EXPLAIN "+sql, -1, false) // o próprio plano não tem custo
 }
 
 // Exec executa INSERT/UPDATE/DELETE numa transação. Faz rollback se for
@@ -201,6 +262,9 @@ func Exec(ctx context.Context, conn *pgx.Conn, p *policy.Policy, sql string, max
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if err := setLocal(ctx, tx, p); err != nil {
+		return nil, err
+	}
+	if err := checkCost(ctx, tx, p, sql); err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, sql, textFormat)

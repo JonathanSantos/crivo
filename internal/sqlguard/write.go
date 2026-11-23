@@ -178,8 +178,14 @@ func (a *analyzer) deleteStmt(del *pg_query.DeleteStmt) {
 	a.returning(s, ctes, del.ReturningList, func(l []*pg_query.Node) { del.ReturningList = l })
 }
 
-// writeWhere exige WHERE com coluna da tabela alvo e injeta os filtros
-// where da política (da ação de escrita e da leitura) com AND.
+// writeWhere exige WHERE com coluna da tabela alvo e embrulha o WHERE da IA
+// nos filtros where da política (da escrita e da leitura):
+//
+//	WHERE CASE WHEN <filtros> THEN <where da IA> ELSE false END
+//
+// Com AND, o Postgres pode avaliar a condição da IA antes do filtro, e um
+// erro (ex.: divisão por zero) só nas linhas escondidas diria que elas
+// existem. O CASE garante a ordem: a condição só roda em linha visível.
 func (a *analyzer) writeWhere(s *scope, ctes *cteEnv, target *entry, act *policy.Action, where *pg_query.Node, verb string, set func(*pg_query.Node)) {
 	t := target.table
 	if where == nil {
@@ -188,23 +194,16 @@ func (a *analyzer) writeWhere(s *scope, ctes *cteEnv, target *entry, act *policy
 	filters := a.writeFilters(t, act, target.name)
 	userWhere := where
 	if a.recheck && len(filters) > 0 {
-		be := where.GetBoolExpr()
-		if be == nil || be.Boolop != pg_query.BoolExprType_AND_EXPR || len(be.Args) <= len(filters) {
+		ce := where.GetCaseExpr()
+		if ce == nil || ce.Arg != nil || len(ce.Args) != 1 || !isFalseConst(ce.Defresult) {
 			a.denyf(t.rule, "", "filtro de linha ausente depois da reescrita")
 		}
-		tail := be.Args[len(be.Args)-len(filters):]
-		for i, f := range filters {
-			if !sameNode(tail[i], f) {
-				a.denyf(t.rule, "", "filtro de linha divergente depois da reescrita")
-			}
-			a.skip(tail[i])
+		cw := ce.Args[0].GetCaseWhen()
+		if cw == nil || !sameNode(cw.Expr, filterCond(filters)) {
+			a.denyf(t.rule, "", "filtro de linha divergente depois da reescrita")
 		}
-		head := be.Args[:len(be.Args)-len(filters)]
-		if len(head) == 1 {
-			userWhere = head[0]
-		} else {
-			userWhere = &pg_query.Node{Node: &pg_query.Node_BoolExpr{BoolExpr: &pg_query.BoolExpr{Boolop: pg_query.BoolExprType_AND_EXPR, Args: head}}}
-		}
+		a.skip(cw.Expr)
+		userWhere = cw.Result
 	}
 	before := target.refs
 	a.expr(s, ctes, userWhere, useGeneral)
@@ -212,13 +211,35 @@ func (a *analyzer) writeWhere(s *scope, ctes *cteEnv, target *entry, act *policy
 		a.denyf(t.rule, fmt.Sprintf("WHERE com uma coluna de %s, ex.: WHERE id = 42", t.name), "o WHERE precisa usar ao menos uma coluna de %s", t.name)
 	}
 	if !a.recheck && len(filters) > 0 {
-		args := flattenAnd(where)
-		args = append(args, filters...)
 		a.rewrites = append(a.rewrites, func() error {
-			set(&pg_query.Node{Node: &pg_query.Node_BoolExpr{BoolExpr: &pg_query.BoolExpr{Boolop: pg_query.BoolExprType_AND_EXPR, Args: args}}})
+			set(&pg_query.Node{Node: &pg_query.Node_CaseExpr{CaseExpr: &pg_query.CaseExpr{
+				Args:      []*pg_query.Node{{Node: &pg_query.Node_CaseWhen{CaseWhen: &pg_query.CaseWhen{Expr: filterCond(filters), Result: where}}}},
+				Defresult: falseConst(),
+			}}})
 			return nil
 		})
 	}
+}
+
+// filterCond junta os filtros com AND (um filtro sozinho vai como está).
+func filterCond(filters []*pg_query.Node) *pg_query.Node {
+	if len(filters) == 1 {
+		return filters[0]
+	}
+	return &pg_query.Node{Node: &pg_query.Node_BoolExpr{BoolExpr: &pg_query.BoolExpr{Boolop: pg_query.BoolExprType_AND_EXPR, Args: filters}}}
+}
+
+func falseConst() *pg_query.Node {
+	return &pg_query.Node{Node: &pg_query.Node_AConst{AConst: &pg_query.A_Const{Val: &pg_query.A_Const_Boolval{Boolval: &pg_query.Boolean{Boolval: false}}}}}
+}
+
+func isFalseConst(n *pg_query.Node) bool {
+	c := n.GetAConst()
+	if c == nil || c.Isnull {
+		return false
+	}
+	b, ok := c.Val.(*pg_query.A_Const_Boolval)
+	return ok && !b.Boolval.Boolval
 }
 
 func flattenAnd(n *pg_query.Node) []*pg_query.Node {
@@ -314,8 +335,8 @@ func (a *analyzer) returning(s *scope, ctes *cteEnv, list []*pg_query.Node, set 
 	}
 	for i, c := range cols {
 		for _, o := range c.origins {
-			if m := o.t.read.MaskOf(o.col); m != "" {
-				a.masks = append(a.masks, OutputMask{Index: i, Label: c.labelOrName(), Mode: m, Column: o.t.name + "." + o.col})
+			if m, ok := o.t.read.MaskFor(o.col); ok {
+				a.masks = append(a.masks, OutputMask{Index: i, Label: c.labelOrName(), Mode: m.Mode, Arg: m.Arg, Column: o.t.name + "." + o.col})
 				break
 			}
 		}
@@ -345,7 +366,11 @@ func (a *analyzer) wrapperSelect(t *tableRef, rv *pg_query.RangeVar) (*pg_query.
 	if !rv.Inh {
 		rel = "ONLY " + rel // FROM ONLY t: sem isso a reescrita voltava a incluir as filhas
 	}
-	sql := "SELECT " + strings.Join(q, ", ") + " FROM " + rel + " WHERE " + t.read.Where
+	// OFFSET 0 é barreira de otimização: o Postgres não empurra condições de
+	// fora para dentro de subquery com OFFSET, então funções da query nunca
+	// são avaliadas em linhas que o filtro esconde (o erro delas vazaria o
+	// conteúdo dessas linhas).
+	sql := "SELECT " + strings.Join(q, ", ") + " FROM " + rel + " WHERE " + t.read.Where + " OFFSET 0"
 	tree, err := pg_query.Parse(sql)
 	if err != nil {
 		return nil, err

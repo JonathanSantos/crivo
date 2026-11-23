@@ -1,0 +1,105 @@
+{
+  "name": "crivo-policy",
+  "displayName": "Crivo",
+  "description": "Realce de sintaxe e diagnósticos (crivo check) para políticas .crivo",
+  "version": "0.1.0",
+  "publisher": "crivo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JonathanSantos/crivo.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:crivo"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Em workspace não confiável, crivo.path e crivo.checkArgs do workspace são ignorados (o executável vem só das configurações do usuário).",
+      "restrictedConfigurations": [
+        "crivo.path",
+        "crivo.checkArgs"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "O crivo check precisa do arquivo em disco; em workspace virtual só o realce de sintaxe funciona."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "crivo",
+        "aliases": [
+          "Crivo",
+          "crivo"
+        ],
+        "extensions": [
+          ".crivo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "crivo",
+        "scopeName": "source.crivo",
+        "path": "./syntaxes/crivo.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "crivo.check",
+        "title": "Check policy",
+        "category": "Crivo"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "crivo.check",
+          "when": "editorLangId == crivo"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Crivo",
+      "properties": {
+        "crivo.path": {
+          "type": "string",
+          "default": "crivo",
+          "scope": "resource",
+          "markdownDescription": "Executável do `crivo` (nome no PATH ou caminho; `~` e caminhos relativos ao workspace são aceitos)."
+        },
+        "crivo.checkArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "--offline"
+          ],
+          "scope": "resource",
+          "markdownDescription": "Argumentos extras de `crivo check <arquivo> --json`. Ex.: `[\"--schema-sql\", \"testdata/schema.sql\"]`. Caminhos relativos partem da pasta do workspace; `${workspaceFolder}` e `${fileDirname}` são expandidos."
+        },
+        "crivo.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Roda `crivo check` ao abrir e ao salvar um arquivo `.crivo`."
+        }
+      }
+    }
+  }
+}

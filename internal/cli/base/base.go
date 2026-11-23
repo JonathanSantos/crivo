@@ -36,6 +36,48 @@ type env struct {
 	via        string // prefixo do comando na auditoria ("" no CLI, "mcp:" no servidor MCP)
 }
 
+// now é o relógio dos portões (trocado nos testes).
+var now = time.Now
+
+// gate é o portão de todo comando que acessa o banco, pelo CLI ou pelo MCP:
+// a validade da política (expires). Os comandos que executam SQL também
+// passam por limits; o teto de custo fica no run, dentro da transação.
+func (e *env) gate() error {
+	if !e.p.Expires.IsZero() && !now().Before(e.p.Expires) {
+		last := e.p.Expires.AddDate(0, 0, -1).Format("2006-01-02")
+		return &cli.ConfigError{Msg: fmt.Sprintf("a política venceu em %s; gere um binário novo com outra data em expires", last)}
+	}
+	return nil
+}
+
+// limits aplica rate e quota. Eles contam pela auditoria; se ela não puder
+// ser lida ou gravada, recusa (sem conta não há limite). É uma trava contra
+// IA em loop, não uma fronteira de segurança: quem tem a máquina apaga o log.
+func (e *env) limits() error {
+	if err := e.gate(); err != nil {
+		return err
+	}
+	if e.p.RatePerMinute == 0 && e.p.QuotaRowsDay == 0 {
+		return nil
+	}
+	if err := audit.Writable(e.p.Name); err != nil {
+		return &cli.ConfigError{Msg: "rate/quota dependem da auditoria, que não pode ser gravada: " + err.Error()}
+	}
+	minute, rows, err := audit.Usage(e.p.Name, now())
+	if err != nil {
+		return &cli.ConfigError{Msg: "rate/quota dependem da auditoria, que não pode ser lida: " + err.Error()}
+	}
+	if e.p.RatePerMinute > 0 && minute >= e.p.RatePerMinute {
+		return &sqlguard.Denial{Reason: fmt.Sprintf("limite de %d execuções por minuto atingido", e.p.RatePerMinute),
+			Accepted: "espere um minuto; se for um loop, pare e revise a abordagem"}
+	}
+	if e.p.QuotaRowsDay > 0 && rows >= e.p.QuotaRowsDay {
+		return &sqlguard.Denial{Reason: fmt.Sprintf("cota de %d linhas por dia atingida (%d hoje)", e.p.QuotaRowsDay, rows),
+			Accepted: "agregue no banco (count, sum, GROUP BY) em vez de trazer linhas; a cota renova à meia-noite"}
+	}
+	return nil
+}
+
 func (e *env) guard() (*sqlguard.Guard, error) {
 	sc, err := e.sess.LoadSchema(cli.SchemaFresh)
 	if err != nil {
@@ -45,7 +87,7 @@ func (e *env) guard() (*sqlguard.Guard, error) {
 }
 
 type globals struct {
-	Format     string `enum:"tsv,json,table" default:"tsv" help:"Formato da saída: tsv, json ou table."`
+	Format     string `enum:"tsv,json,table,markdown" default:"tsv" help:"Formato da saída: tsv, json, table ou markdown."`
 	JSONErrors bool   `name:"json-errors" help:"Erros em JSON no stderr."`
 }
 
@@ -56,6 +98,7 @@ type rootCmd struct {
 	Describe describeCmd `cmd:"" help:"Colunas permitidas de uma tabela, com tipo, nulabilidade, chaves e máscaras."`
 	Skill    skillCmd    `cmd:"" help:"Gera e instala a skill do Copilot."`
 	Refresh  refreshCmd  `cmd:"" help:"Recarrega o cache de schema."`
+	Audit    auditCmd    `cmd:"" help:"Mostra o log de auditoria desta base (filtros por tempo, decisão e comando)."`
 	Mcp      mcpCmd      `cmd:"" help:"Serve a política como servidor MCP (stdio) para clientes de IA. Opcional; o CLI com a skill continua sendo o modo principal."`
 }
 
@@ -79,6 +122,15 @@ func mainWith(src []byte, args []string, stdout, stderr io.Writer) int {
 		opts = append(opts,
 			kong.DynamicCommand("query", "Executa um SELECT em transação READ ONLY.", "", &queryCmd{}),
 			kong.DynamicCommand("explain", "Plano (EXPLAIN sem ANALYZE) de um SELECT validado.", "", &explainCmd{}))
+	}
+	if len(p.Queries) > 0 {
+		opts = append(opts, kong.DynamicCommand("run", "Roda uma consulta nomeada da política (sem nome: lista as consultas).", "", &runCmd{}))
+	}
+	if p.HasWrite() && p.ApprovalWrites {
+		opts = append(opts,
+			kong.DynamicCommand("approve", "Executa uma escrita pendente (só uma pessoa, no terminal).", "", &approveCmd{}),
+			kong.DynamicCommand("pending", "Lista as escritas esperando aprovação.", "", &pendingCmd{}),
+			kong.DynamicCommand("reject", "Descarta uma escrita pendente.", "", &rejectCmd{}))
 	}
 	if p.HasWrite() {
 		opts = append(opts, kong.DynamicCommand("exec", "Executa INSERT/UPDATE/DELETE com teto de linhas.", "", &execCmd{}))
@@ -124,6 +176,9 @@ func actionsText(r *policy.Rule) string {
 }
 
 func (c *tablesCmd) Run(e *env) error {
+	if err := e.gate(); err != nil {
+		return err
+	}
 	rows := &output.Rows{Columns: []string{"tabela", "ações", "descrição"}}
 	var sc *schema.Schema
 	for _, r := range e.p.Rules {
@@ -160,10 +215,20 @@ func (c *tablesCmd) Run(e *env) error {
 }
 
 type describeCmd struct {
-	Table string `arg:"" help:"Tabela (ou schema.tabela)."`
+	Table  string `arg:"" help:"Tabela (ou schema.tabela)."`
+	Sample int    `help:"Mostra também N linhas de exemplo (até 20), já mascaradas."`
 }
 
+const maxSample = 20
+
 func (c *describeCmd) Run(e *env) error {
+	if err := e.gate(); err != nil {
+		return err
+	}
+	if c.Sample > 0 && e.format == output.JSON {
+		// colunas e amostra seriam dois documentos JSON seguidos
+		return &cli.ConfigError{Msg: "--sample não combina com --format json; use tsv, table ou markdown, ou uma query"}
+	}
 	sch, name := e.p.Schema, strings.ToLower(c.Table)
 	if i := strings.IndexByte(name, '.'); i >= 0 {
 		sch, name = name[:i], name[i+1:]
@@ -199,12 +264,38 @@ func (c *describeCmd) Run(e *env) error {
 		notes = append(notes, "filtro de leitura: só linhas com "+rd.Where)
 	}
 	rows.Footer = strings.Join(notes, " | ")
-	return output.Write(e.stdout, e.format, rows)
+	if err := output.Write(e.stdout, e.format, rows); err != nil {
+		return err
+	}
+	if c.Sample <= 0 {
+		return nil
+	}
+	if c.Sample > maxSample {
+		return &cli.ConfigError{Msg: fmt.Sprintf("--sample vai até %d linhas", maxSample)}
+	}
+	rd := r.Action(policy.Read)
+	qi := func(id string) string { return `"` + strings.ReplaceAll(id, `"`, `""`) + `"` }
+	var cols []string
+	for _, col := range t.ColumnNames() {
+		if rd.AllowsCol(col) {
+			cols = append(cols, qi(col))
+		}
+	}
+	if len(cols) == 0 {
+		return nil // só escrita: não há o que ler
+	}
+	fmt.Fprintln(e.stdout)
+	sql := fmt.Sprintf("SELECT %s FROM %s.%s LIMIT %d", strings.Join(cols, ", "), qi(sch), qi(name), c.Sample)
+	// mesmo caminho de uma leitura: guard, máscaras, limites e auditoria
+	return e.runSelect("describe-sample", sql)
 }
 
 type refreshCmd struct{}
 
 func (c *refreshCmd) Run(e *env) error {
+	if err := e.gate(); err != nil {
+		return err
+	}
 	sc, err := e.sess.LoadSchema(cli.SchemaRefresh)
 	if err != nil {
 		return err
@@ -232,6 +323,8 @@ func (e *env) audit(cmd string, sql string, v *sqlguard.Verdict, start time.Time
 	var d *sqlguard.Denial
 	var pe *sqlguard.ParseError
 	var many *run.TooManyRows
+	var costly *run.TooCostly
+	var pend *cli.PendingError
 	switch {
 	case err == nil:
 		entry.Decision = "aceito"
@@ -242,12 +335,20 @@ func (e *env) audit(cmd string, sql string, v *sqlguard.Verdict, start time.Time
 		}
 	case errors.As(err, &many):
 		entry.Decision, entry.Reason = "barrado", many.Error()
+	case errors.As(err, &costly):
+		entry.Decision, entry.Reason = "barrado", costly.Error()
+	case errors.As(err, &pend):
+		entry.Decision, entry.Reason = "pendente", "aguardando "+e.p.Name+" approve "+pend.ID
 	case errors.As(err, &pe):
 		entry.Decision, entry.Reason = "invalido", pe.Message
 	default:
-		entry.Decision, entry.Reason = "erro", err.Error()
+		entry.Decision, entry.Reason = "erro", run.SafeMessage(err)
 	}
-	if aerr := audit.Write(e.p.Name, entry); aerr != nil {
+	write := audit.Write
+	if e.p.AuditSyslog {
+		write = audit.WriteSyslog
+	}
+	if aerr := write(e.p.Name, entry); aerr != nil {
 		fmt.Fprintf(e.stderr, "aviso: log de auditoria falhou: %v\n", aerr)
 	}
 }
@@ -261,15 +362,27 @@ func (e *env) onDBError(err error) error {
 	return err
 }
 
-func (e *env) masked(res *run.Result, v *sqlguard.Verdict) [][]*string {
-	if len(v.Masks) == 0 {
-		return res.Rows
-	}
+// masker prepara as máscaras da execução. Com pseudonym na política, a chave
+// local precisa existir (ou ser criada): sem ela, recusa antes de executar.
+func (e *env) masker(v *sqlguard.Verdict) (*mask.Masker, error) {
 	m := mask.New()
+	for _, om := range v.Masks {
+		if om.Mode == policy.MaskPseudonym {
+			key, err := mask.PseudonymKey(e.p.Name)
+			if err != nil {
+				return nil, &cli.ConfigError{Msg: err.Error()}
+			}
+			return m.WithPseudonymKey(key), nil
+		}
+	}
+	return m, nil
+}
+
+func masked(m *mask.Masker, res *run.Result, v *sqlguard.Verdict) [][]*string {
 	for _, row := range res.Rows {
 		for _, om := range v.Masks {
 			if om.Index < len(row) && row[om.Index] != nil {
-				s := m.Apply(om.Mode, *row[om.Index])
+				s := m.ApplyMask(om.Mask(), *row[om.Index])
 				row[om.Index] = &s
 			}
 		}
@@ -279,20 +392,33 @@ func (e *env) masked(res *run.Result, v *sqlguard.Verdict) [][]*string {
 
 type queryCmd struct{ sqlArgs }
 
-func (c *queryCmd) Run(e *env) (err error) {
-	start := time.Now()
+func (c *queryCmd) Run(e *env) error {
 	sql, err := cli.ReadSQL(c.SQL, c.File)
 	if err != nil {
 		return err
 	}
+	return e.runSelect("query", sql)
+}
+
+// runSelect é o caminho de toda leitura (query, consulta nomeada): portão,
+// limites, guard, máscaras, teto de custo (no run) e auditoria.
+func (e *env) runSelect(cmd, sql string) (err error) {
+	start := time.Now()
 	var v *sqlguard.Verdict
 	var n int64
-	defer func() { e.audit("query", sql, v, start, n, false, err) }()
+	defer func() { e.audit(cmd, sql, v, start, n, false, err) }()
+	if err = e.limits(); err != nil {
+		return err
+	}
 	g, err := e.guard()
 	if err != nil {
 		return err
 	}
 	if v, err = g.Check(sqlguard.CmdQuery, sql); err != nil {
+		return err
+	}
+	m, err := e.masker(v)
+	if err != nil {
 		return err
 	}
 	conn, err := e.sess.Conn()
@@ -305,9 +431,61 @@ func (c *queryCmd) Run(e *env) (err error) {
 	}
 	n = int64(len(res.Rows))
 	return output.Write(e.stdout, e.format, &output.Rows{
-		Columns: res.Columns, Types: res.Types, Values: e.masked(res, v),
+		Columns: res.Columns, Types: res.Types, Values: masked(m, res, v),
 		Footer: output.ReadFooter(len(res.Rows), res.Truncated, v.CapByRequest),
 	})
+}
+
+type runCmd struct {
+	Name   string   `arg:"" optional:"" help:"Nome da consulta (sem nome: lista as consultas)."`
+	Params []string `arg:"" optional:"" help:"Parâmetros como nome=valor."`
+}
+
+func (c *runCmd) Run(e *env) error {
+	if c.Name == "" {
+		return e.listQueries()
+	}
+	q := e.p.Query(c.Name)
+	if q == nil {
+		return &cli.ConfigError{Msg: fmt.Sprintf("consulta %q não existe; rode %s run para ver as consultas", c.Name, e.p.Name)}
+	}
+	values := map[string]string{}
+	for _, kv := range c.Params {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return &cli.ConfigError{Msg: fmt.Sprintf("parâmetro %q precisa ser nome=valor", kv)}
+		}
+		values[k] = v
+	}
+	return e.runNamed(q, values)
+}
+
+// runNamed liga os parâmetros na árvore e segue pelo caminho normal de
+// leitura: a consulta nomeada não ganha privilégio nenhum.
+func (e *env) runNamed(q *policy.NamedQuery, values map[string]string) error {
+	sql, err := sqlguard.Bind(q, values)
+	if err != nil {
+		var pe *sqlguard.ParamError
+		if errors.As(err, &pe) {
+			return &cli.ConfigError{Msg: pe.Msg}
+		}
+		return err
+	}
+	return e.runSelect("run", sql)
+}
+
+func (e *env) listQueries() error {
+	rows := &output.Rows{Columns: []string{"consulta", "parâmetros", "descrição"}}
+	for _, q := range e.p.Queries {
+		var ps []string
+		for _, p := range q.Params {
+			ps = append(ps, p.Name+" "+string(p.Type))
+		}
+		name, params, doc := q.Name, strings.Join(ps, ", "), q.Doc
+		rows.Values = append(rows.Values, []*string{&name, &params, &doc})
+	}
+	rows.Footer = fmt.Sprintf("uso: %s run <consulta> nome=valor ...", e.p.Name)
+	return output.Write(e.stdout, e.format, rows)
 }
 
 type explainCmd struct{ sqlArgs }
@@ -320,6 +498,9 @@ func (c *explainCmd) Run(e *env) (err error) {
 	}
 	var v *sqlguard.Verdict
 	defer func() { e.audit("explain", sql, v, start, 0, false, err) }()
+	if err = e.limits(); err != nil {
+		return err
+	}
 	g, err := e.guard()
 	if err != nil {
 		return err
@@ -373,11 +554,21 @@ func (c *execCmd) Run(e *env) (err error) {
 	var v *sqlguard.Verdict
 	var n int64
 	defer func() { e.audit("exec", sql, v, start, n, bool(c.DryRun), err) }()
+	if err = e.limits(); err != nil {
+		return err
+	}
 	g, err := e.guard()
 	if err != nil {
 		return err
 	}
 	if v, err = g.Check(sqlguard.CmdExec, sql); err != nil {
+		return err
+	}
+	if e.p.ApprovalWrites && !bool(c.DryRun) {
+		return e.pendingWrite(sql, v)
+	}
+	m, err := e.masker(v)
+	if err != nil {
 		return err
 	}
 	conn, err := e.sess.Conn()
@@ -397,7 +588,7 @@ func (c *execCmd) Run(e *env) (err error) {
 	n = res.Affected
 	rows := &output.Rows{Footer: output.WriteFooter(res.Affected, bool(c.DryRun))}
 	if len(res.Columns) > 0 {
-		rows.Columns, rows.Types, rows.Values = res.Columns, res.Types, e.masked(res, v)
+		rows.Columns, rows.Types, rows.Values = res.Columns, res.Types, masked(m, res, v)
 	}
 	if c.DryRun {
 		fmt.Fprintln(e.stdout, "-- sql "+v.SQL)
@@ -453,6 +644,9 @@ func (e *env) defaultBin(flag string) string {
 func (e *env) skillContent(o skillOpts) (string, error) {
 	opts := skill.Options{Bin: e.defaultBin(o.Bin), WithSchema: o.WithSchema}
 	if o.WithSchema {
+		if err := e.gate(); err != nil { // o schema pode vir do banco
+			return "", err
+		}
 		sc, err := e.sess.LoadSchema(cli.SchemaFresh)
 		if err != nil {
 			return "", err

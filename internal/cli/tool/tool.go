@@ -4,6 +4,7 @@ package tool
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 
 	"crivo/internal/cli"
 	"crivo/internal/output"
+	"crivo/internal/pii"
 	"crivo/internal/policy"
 	"crivo/internal/run"
 	"crivo/internal/schema"
@@ -78,6 +80,7 @@ func loadPolicy(path string) (*policy.Policy, policy.Diags, error) {
 	p, diags := policy.Parse(filepath.Base(path), string(src))
 	if !diags.HasErrors() {
 		diags = append(diags, sqlguard.CheckPolicy(p)...)
+		diags = append(diags, sqlguard.CheckNamedQueries(p)...)
 		diags.Sort()
 	}
 	return p, diags, nil
@@ -115,7 +118,39 @@ func schemaFromDDL(path string, p *policy.Policy, stderr io.Writer) (*schema.Sch
 
 type checkCmd struct {
 	File string `arg:"" type:"existingfile" help:"Arquivo .crivo."`
+	JSON bool   `name:"json" help:"Saída em JSON (para editores): arquivo, ok, nota e diagnósticos com linha, coluna, severidade e mensagem."`
+	Lock bool   `name:"lock" help:"Grava <arquivo>.lock com as colunas que cada tabela expõe hoje; os próximos check e build avisam de colunas novas."`
 	schemaFlags
+}
+
+// checkJSON é o contrato do check --json, usado pela extensão do VS Code.
+// Linha e coluna são 1-based; 0 quando o diagnóstico não tem posição.
+type checkJSON struct {
+	File        string          `json:"file"`
+	OK          bool            `json:"ok"`
+	Note        string          `json:"note,omitempty"`
+	Diagnostics []checkJSONDiag `json:"diagnostics"`
+}
+
+type checkJSONDiag struct {
+	Line     int    `json:"line"`
+	Col      int    `json:"col"`
+	Severity string `json:"severity"` // error | warning
+	Message  string `json:"message"`
+}
+
+func writeCheckJSON(w io.Writer, file string, res *checkResult) {
+	out := checkJSON{File: file, OK: !res.diags.HasErrors(), Note: res.note, Diagnostics: []checkJSONDiag{}}
+	for _, d := range res.diags {
+		sev := "error"
+		if d.Severity == policy.SevWarning {
+			sev = "warning"
+		}
+		out.Diagnostics = append(out.Diagnostics, checkJSONDiag{Line: d.Pos.Line, Col: d.Pos.Col, Severity: sev, Message: d.Msg})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(out)
 }
 
 // checkResult é o resultado de um check completo.
@@ -173,6 +208,9 @@ func runCheck(path string, f schemaFlags, stderr io.Writer) (*checkResult, error
 	}
 	res.schema = sc
 	res.diags = append(res.diags, schemaChecks(p, sc)...)
+	res.diags = append(res.diags, namedQueryChecks(p, sc)...)
+	res.diags = append(res.diags, piiChecks(p, sc)...)
+	res.diags = append(res.diags, lockChecks(path, p, sc)...)
 	if sess.SchemaFromDB {
 		res.diags = append(res.diags, privilegeChecks(sess, p, sc)...)
 	}
@@ -187,10 +225,26 @@ func (c *checkCmd) Run(e *env) error {
 	if err != nil {
 		return err
 	}
+	if c.JSON {
+		writeCheckJSON(e.stdout, c.File, res)
+		if res.diags.HasErrors() {
+			return &cli.ExitError{Code: output.ExitConfig}
+		}
+		return nil
+	}
 	printDiags(e.stdout, res.diags)
 	if res.diags.HasErrors() {
 		fmt.Fprintf(e.stdout, "✗ %s: %d erro(s)\n", res.p.File, len(res.diags.Errors()))
 		return &cli.ExitError{Code: output.ExitConfig}
+	}
+	if c.Lock {
+		if res.schema == nil {
+			return &cli.ConfigError{Msg: "--lock precisa do schema: " + res.note}
+		}
+		if err := writeLock(c.File, exposure(res.p, res.schema)); err != nil {
+			return err
+		}
+		fmt.Fprintf(e.stdout, "✓ trava gravada em %s\n", lockPath(c.File))
 	}
 	fmt.Fprintf(e.stdout, "✓ %s: política %s, %d regras; %s\n", res.p.File, res.p.Name, len(res.p.Rules), res.note)
 	return nil
@@ -249,6 +303,53 @@ func schemaChecks(p *policy.Policy, sc *schema.Schema) policy.Diags {
 	}
 	if hidden > 0 {
 		errf(policy.Pos{}, policy.SevWarning, "%d tabela(s) do banco sem regra: invisíveis para a IA (deny por padrão)", hidden)
+	}
+	return ds
+}
+
+// piiChecks avisa quando uma coluna com cara de dado pessoal ou segredo sai
+// sem máscara (inclusive colunas novas de uma regra sem lista de colunas).
+func piiChecks(p *policy.Policy, sc *schema.Schema) policy.Diags {
+	var ds policy.Diags
+	for _, r := range p.Rules {
+		rd := r.Action(policy.Read)
+		if r.Deny || rd == nil {
+			continue
+		}
+		sch := p.SchemaOf(r)
+		for _, tname := range p.MatchingTables(r, sch, sc.TableNames(sch)) {
+			for _, s := range pii.Exposed(tname, sc.Table(sch, tname).ColumnNames(), rd) {
+				fix := "except(" + s.Column + ")"
+				if !s.Except {
+					fix = "mask(" + s.Column + ": " + s.Mask.Text() + ")"
+				}
+				ds = append(ds, policy.Diag{File: p.File, Pos: rd.Pos, Severity: policy.SevWarning,
+					Msg: fmt.Sprintf("%s.%s parece %s e sai sem máscara; sugestão: %s", tname, s.Column, s.Kind, fix)})
+			}
+		}
+	}
+	return ds
+}
+
+// namedQueryChecks roda cada consulta nomeada pelo guard, com valores de
+// exemplo, contra o schema: o que o guard recusaria nunca vira consulta pronta.
+func namedQueryChecks(p *policy.Policy, sc *schema.Schema) policy.Diags {
+	if len(p.Queries) == 0 {
+		return nil
+	}
+	var ds policy.Diags
+	g, err := sqlguard.New(p, sc)
+	if err != nil {
+		return nil // o erro de política já aparece em outro diagnóstico
+	}
+	for _, q := range p.Queries {
+		sql, err := sqlguard.Bind(q, sqlguard.SampleValues(q))
+		if err == nil {
+			_, err = g.Check(sqlguard.CmdQuery, sql)
+		}
+		if err != nil {
+			ds = append(ds, policy.Diag{File: p.File, Pos: q.SQLPos, Severity: policy.SevError, Msg: fmt.Sprintf("query %s seria barrada pelo crivo: %v", q.Name, err)})
+		}
 	}
 	return ds
 }
@@ -509,7 +610,7 @@ func testOne(w io.Writer, p *policy.Policy, g *sqlguard.Guard, cmd sqlguard.Comm
 		if i == 0 {
 			label = "  máscara"
 		}
-		fmt.Fprintf(w, "%s  %s → %s (%s)\n", label, m.Label, m.Mode, m.Column)
+		fmt.Fprintf(w, "%s  %s → %s (%s)\n", label, m.Label, m.Mask().Text(), m.Column)
 	}
 	switch {
 	case v.Kind == sqlguard.KindSelect && v.CapByRequest:
@@ -830,6 +931,9 @@ func initText(name, connect, sch string, sc *schema.Schema) string {
 	for _, n := range names {
 		t := sc.Table(sch, n)
 		w("\n#   colunas: %s\n", strings.Join(t.ColumnNames(), ", "))
+		if sug := pii.ReadRule(pii.Suggest(n, t.ColumnNames())); sug != "" {
+			w("#   sugestão: %s\n", sug)
+		}
 		if t.Comment != "" {
 			w("## %s\n", oneLine(t.Comment))
 		}

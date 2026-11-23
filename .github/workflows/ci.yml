@@ -14,7 +14,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm gera o crivo-linux-arm64 nativamente (cgo sem cross).
+        # Windows arm64 fica de fora: o cgo no runner windows-11-arm não foi
+        # verificado e uma perna falhando bloquearia o release.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -30,10 +33,18 @@ jobs:
         if: runner.os == 'Windows'
         run: echo "C:\\msys64\\mingw64\\bin" >> "$GITHUB_PATH"
       - run: go vet ./...
-      - run: go test ./...
-      # testcontainers-go sobe o Postgres onde há Docker (Linux)
+      # internal/integration sobe Postgres via testcontainers onde há Docker; o
+      # runner arm64 também tem Docker, então lá o pacote fica de fora.
+      - name: Testes
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-24.04-arm" ]; then
+            go test $(go list ./... | grep -v '/internal/integration$')
+          else
+            go test ./...
+          fi
+      # testcontainers-go sobe o Postgres onde há Docker; só na perna Linux amd64
       - name: Integração
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: go test -v ./internal/integration/
       # Em tag vX.Y.Z a versão é a própria tag; fora dela, o hash curto
       # (mesmo formato do `git describe --tags --always` do Makefile).
@@ -103,14 +114,22 @@ jobs:
           path: dist/crivo-*
           if-no-files-found: error
 
-  # Dispara só em tag vX.Y.Z (ver `make tag`), depois que os três SOs passaram.
+  # Dispara só em tag vX.Y.Z (ver `make tag`), depois que todas as pernas passaram.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ubuntu-latest
+    # permissions no job substitui o bloco do topo: lista as três.
     permissions:
-      contents: write
+      contents: write      # cria o release e commita Formula/ e bucket/ na main
+      id-token: write      # OIDC do attest-build-provenance
+      attestations: write  # grava a atestação de proveniência
     steps:
+      # A main (não a tag) porque o último passo commita nela; vem antes do
+      # download para não apagar o dist/.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/download-artifact@v4
         with:
           pattern: crivo-*
@@ -122,6 +141,11 @@ jobs:
           ls -la
           sha256sum crivo-* > checksums.txt
           cat checksums.txt
+      # Proveniência SLSA dos binários (verificável com `gh attestation verify`).
+      # Fica antes da publicação: se falhar, o release não sai sem atestação.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/crivo-*
       - name: Publica o release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,3 +155,18 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Crivo $GITHUB_REF_NAME" \
             --generate-notes $pre
+      # Atualiza a fórmula do Homebrew e o manifesto do Scoop (tap/bucket neste
+      # próprio repo) com as URLs versionadas e os SHA-256 deste release. Fica
+      # por último para nunca bloquear a publicação; pré-releases não entram.
+      # O push com o GITHUB_TOKEN não dispara outro workflow.
+      - name: Atualiza Formula/ e bucket/
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          python3 -I scripts/packages.py "$GITHUB_REF_NAME" dist/checksums.txt
+          git add Formula bucket
+          if git diff --cached --quiet; then echo "Formula/ e bucket/ sem mudança"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(packages): Homebrew e Scoop para $GITHUB_REF_NAME"
+          git pull --rebase origin main
+          git push origin HEAD:main

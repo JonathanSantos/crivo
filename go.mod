@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/alecthomas/kong v1.16.1
+	github.com/creack/pty v1.1.24
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pganalyze/pg_query_go/v6 v6.2.5

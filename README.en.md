@@ -7,9 +7,9 @@
 
 <p align="center"><a href="#installation">Installation</a> · <a href="#workflow">Workflow</a> · <a href="#the-policy">Policy</a> · <a href="#commands">Commands</a> · <a href="#read-only-user-the-recommended-strategy">Read-only user</a> · <a href="#copilot-integration">Copilot</a> · <a href="#mcp-optional">MCP</a></p>
 
-**Site:** [jonathansantos.github.io/crivo](https://jonathansantos.github.io/crivo/) (in Portuguese), with a demo showing Crivo's real answer to each query.
+**Site:** [jonathansantos.github.io/crivo/en](https://jonathansantos.github.io/crivo/en/), with a demo showing Crivo's real answer to each query.
 
-**Download a prebuilt binary** ([all versions](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
+**Download a prebuilt binary** ([all versions](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Linux arm64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-arm64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
 
 *Crivo* is Portuguese for "sieve". **Every query goes through the sieve.** Crivo turns a policy file (`.crivo`) into a local CLI for a pre-production Postgres, plus a skill that teaches GitHub Copilot in VS Code how to use it. Every query the AI sends goes through the real Postgres parser (pg_query) before it reaches the database, and only what the policy allows is executed.
 
@@ -26,6 +26,18 @@
 > The adversary is the AI, not a person. Anyone with access to the machine can pull the password from the keychain or tamper with the binary. Never use production credentials and do not distribute generated binaries.
 
 ## Installation
+
+**Homebrew** (macOS and Linux) and **Scoop** (Windows), straight from this repository:
+
+```bash
+brew tap JonathanSantos/crivo https://github.com/JonathanSantos/crivo && brew install crivo
+```
+
+```bash
+scoop bucket add crivo https://github.com/JonathanSantos/crivo && scoop install crivo
+```
+
+Each release updates the formula and the manifest by itself. Details, checksum and provenance verification (`gh attestation verify`) in [docs/install.md](docs/install.md) (Portuguese).
 
 **Prebuilt binary** (no Go or C compiler needed): grab the file for your platform from the [releases page](https://github.com/JonathanSantos/crivo/releases/latest) or with `curl`. Downloading from the terminal avoids macOS Gatekeeper quarantine, which refuses binaries without a developer signature when they come from a browser.
 
@@ -95,24 +107,42 @@ Full example in [examples/vendas.crivo](examples/vendas.crivo) and test cases in
 | `where <expr>` | Row filter: on reads the table becomes a filtered subquery (keeping the alias); on `update`/`delete` it is `AND`ed into the `WHERE`. Extends to the next top-level comma. |
 | `max N` | Cap on rows affected by a write (default 50). Above it: rollback and refusal. |
 | `limit N` | Per-table cap on rows per query (lower than the global one). |
-| `mask(col: partial\|redact\|hash)` | Mask applied to the result. A masked column may only appear bare in the SELECT list. |
+| `mask(col: mode)` | Mask applied to the result. Modes: `partial` (jo***@domain), `redact` (***), `hash` (stable within one execution), `email` (domain only), `last4` (last 4 characters), `month` (date becomes YYYY-MM), `bucket N` (number becomes a range of N), `pseudonym` (stable across executions, local key). A masked column may only appear bare in the SELECT list; `hash` and `pseudonym` may also go in `GROUP BY`/`DISTINCT`. |
 | `deny` / no rule | The table does not exist for the AI. `pg_*`, `pg_catalog` and `information_schema` are always blocked. |
 | `## text` | Table description for the skill and for `describe` (must sit right above the rule). |
 | line starting with a space | Continues the previous rule. |
+| `query name(p type, ...) "SELECT ... $1"` | Named query, called with `vendas run name p=value` and as the MCP tool `q_name`. Read-only; types `int`, `numeric`, `text`, `date`, `bool`. Values go into the parse tree as constants and the query goes through the whole guard on every call. |
+| `expires YYYY-MM-DD` | The binary stops reaching the database after that day (policy and skill still work). |
+| `cost N` | Refuses a query whose `EXPLAIN` estimated cost exceeds N, before running it. |
+| `rate N/min` · `quota N rows/day` | Executions per minute and rows per day. Counted from the local audit log: a guard against an AI stuck in a loop, not a security boundary. |
+| `approval writes` | A real `exec` only leaves the write pending; a person runs it with `vendas approve <id>` in the terminal. |
+| `audit syslog` | Also sends every audit line to syslog (macOS and Linux). |
 
-Precedence: exact name beats pattern; among patterns, the longest literal prefix; on a tie, `deny` wins.
+Precedence: exact name beats pattern; among patterns, the longest literal prefix; on a tie, `deny` wins. The new directives (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`) cannot be table names.
 
 ## Commands
 
-**Tool (`crivo`, no embedded policy):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. None of them executes SQL from the AI. `check`, `test` and `grants` accept `--schema-sql file.sql` to read the schema from DDL (`testdata/schema.sql` or the output of `pg_dump --schema-only`) without connecting to the database:
+**Tool (`crivo`, no embedded policy):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. None of them executes SQL from the AI. `init` already comments a suggested rule per table, recognising by name columns holding documents, e-mails, phones, passwords, cards, birth dates, income and addresses; `check` warns when one of them goes out unmasked. `check --lock` writes `<policy>.lock` with the columns each table exposes, and later `check` and `build` runs warn about new ones. `check --json` is the output used by the [VS Code extension](editors/vscode). `check`, `test` and `grants` accept `--schema-sql file.sql` to read the schema from DDL (`testdata/schema.sql` or the output of `pg_dump --schema-only`) without connecting to the database:
 
 ```bash
 crivo test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql
 ```
 
-**Generated binary (`vendas`, base mode):** `policy`, `tables`, `describe <table>`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table`, `--json-errors`, `-f file.sql`. The mode is decided by the embedded slot; there is no flag or variable that switches modes, so the AI cannot reach `build` through a generated binary.
+**Generated binary (`vendas`, base mode):** `policy`, `tables`, `describe <table> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [query] [p=value...]`, `approve|pending|reject` (with `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f file.sql`. The mode is decided by the embedded slot; there is no flag or variable that switches modes, so the AI cannot reach `build` through a generated binary.
 
-Exit codes: `0` success, `1` bug, `2` refused by Crivo, `3` invalid SQL, `4` database error, `5` missing configuration or secret.
+Exit codes: `0` success, `1` bug, `2` refused by Crivo (including the cost ceiling, `rate` and `quota`), `3` invalid SQL, `4` database error, `5` configuration, missing secret or expired policy, `6` write pending approval.
+
+### Write approval
+
+With `approval writes`, real writes no longer depend on the VS Code click and work the same in Copilot, Claude Code and any MCP client:
+
+```bash
+vendas exec "UPDATE pedidos SET status = 'pago' WHERE id = 7"   # validates, simulates and exits with 6: pending #a3f2c1
+vendas pending                                                  # lists pending writes (they expire in 1 hour)
+vendas approve a3f2c1                                           # the person only, in the terminal: shows the SQL, asks for the id again and runs it
+```
+
+What keeps the AI from approving on its own: `approve` needs an interactive terminal and the id typed again, does not exist in MCP and never matches a VS Code auto-approve rule (`skill vscode` generates an explicit rule asking for the click). On approval the original SQL goes through the guard again, against the current schema; the SQL stored in the pending entry is never run directly.
 
 ## Read-only user: the recommended strategy
 
@@ -169,6 +199,8 @@ make test-integration                                        # real Postgres (th
 make fuzz                                                    # go test -fuzz on sqlguard.Guard
 ```
 
+The VS Code extension for `.crivo` files (highlighting and `crivo check` diagnostics) lives in [editors/vscode](editors/vscode). The leak fuzzer (`internal/integration`) generates queries, runs the accepted ones on Postgres and fails if any blocked or masked value shows up in clear.
+
 `make test` needs no database or network and never touches the real home, cache or keychain: tests use `internal/testenv`, which points everything at temporary folders and an in-memory keychain. It includes an end-to-end test (`cmd/crivo`) that builds the binary and walks the flow with the schema from DDL (`go test -short` skips it).
 
 Integration tests use, in this order, `CRIVO_TEST_DSN` (the test creates and drops the `crivo_it` schema and temporary `crivo_it_*` roles), a throwaway Postgres created with `initdb` when it is on `PATH` (`make test-integration` turns this on with `CRIVO_TEST_LOCALPG=1`), or testcontainers-go when Docker is available; with none, they are skipped. They exercise the generated binary in both modes, CLI and MCP, `init` and `check` against the database, recovery when the schema changes, and they apply the `crivo grants` SQL to confirm the database itself then refuses what the policy denies. Golden files are regenerated with `go test ./internal/policy ./internal/skill ./internal/cli/tool -update`.
@@ -208,4 +240,10 @@ Places where the specification left room, and what was chosen:
 - **`WITH RECURSIVE`:** Postgres lets each CTE reference the ones defined after it; Crivo refuses that forward reference (and the CTE's own name outside the recursive term) instead of resolving the name as the real table with the same name.
 - **Upsert:** `INSERT ... ON CONFLICT DO UPDATE` is refused on tables with a read or update `where` filter, because it changes the existing row without going through the `WHERE`. `ON CONFLICT DO NOTHING` is still accepted.
 - **JSON with repeated columns:** `SELECT a.id, b.id` comes out with keys `id` and `id_2`, so no value is lost.
+- **Row filter as a fence:** the read-filter subquery ends in `OFFSET 0`, which stops Postgres from pushing query conditions into it; and in `UPDATE`/`DELETE` the AI's `WHERE` goes inside `CASE WHEN <filters> THEN ... ELSE false END`. So a query function never runs on a hidden row, whose error (e.g. division by zero) would reveal that it exists. The cost is losing the index on the filtered table: on 1 million rows, a primary-key read goes from 0.016 ms to 80 ms and a primary-key `UPDATE` from 0.19 ms to 42 ms (numbers in [ADR 0001](docs/adr/0001-portoes-e-consultas.md)). Tables without `where` do not change. Found by the leak fuzzer.
+- **`NATURAL JOIN`:** the guard names columns the way Postgres does (`coalesce`, `case`, a cast takes the type name) and refuses `NATURAL JOIN` when a side has an unnamed column (`?column?`). Before, a naming mismatch let the join compare a masked column without the check. Found by the leak fuzzer.
+- **Database errors without values:** in data (SQLSTATE 22) and constraint (23) errors, quoted text is cut from the message and from the audit log, because it may be the content of a hidden row or a masked column.
+- **Gates in the binary, not in the client:** expiry, `rate`, `quota`, cost and approval sit below both the CLI and MCP and are checked on every call (the MCP server stays open). See [ADR 0001](docs/adr/0001-portoes-e-consultas.md) (Portuguese).
+- **`pseudonym`:** stable across executions on this machine (a random per-policy key in `~/.crivo/keys/<name>.key`, 0600), so the AI can join results of different queries. That also allows comparing equality across executions, which `hash` does not; without the key, the query is refused.
+- **`rate` and `quota`** count from the audit log. If it cannot be read or written, the execution is refused; log rotation (10 MB, 3 files) does not reset the count.
 - Tables named like a directive (`name`, `limit`, ...) cannot have a rule in v1; partitions do not appear in the schema (query the parent table).

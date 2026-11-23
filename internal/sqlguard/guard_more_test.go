@@ -218,7 +218,7 @@ func TestNaturalJoin(t *testing.T) {
 		{sql: "SELECT p.id, i.quantidade FROM pedidos p NATURAL JOIN pedido_itens i", ok: true, want: "NATURAL JOIN pedido_itens i"},
 		{sql: "SELECT c.email FROM clientes c NATURAL LEFT JOIN produtos x", ok: true, want: "NATURAL LEFT JOIN produtos x", masks: emailMask},
 		// pagamentos continua filtrado dentro do NATURAL JOIN
-		{sql: "SELECT g.valor FROM pedido_itens i NATURAL JOIN pagamentos g", ok: true, want: "NATURAL JOIN (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') g", filters: 1},
+		{sql: "SELECT g.valor FROM pedido_itens i NATURAL JOIN pagamentos g", ok: true, want: "NATURAL JOIN (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) g", filters: 1},
 
 		// NATURAL compara todas as colunas comuns, inclusive cpf (bloqueado) e
 		// email (mascarado): seria oráculo de igualdade sem citar a coluna
@@ -241,9 +241,9 @@ func TestWithClause(t *testing.T) {
 		// dentro da própria CTE (não recursiva) o nome ainda é a tabela real
 		{sql: "WITH clientes AS (SELECT * FROM clientes) SELECT * FROM clientes", ok: true,
 			want: "WITH clientes AS (SELECT clientes.id, clientes.nome, clientes.email, clientes.telefone, clientes.cidade FROM clientes)", masks: clientesStar},
-		{sql: "WITH pagamentos AS (SELECT * FROM pagamentos) SELECT id FROM pagamentos", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') pagamentos)", filters: 1},
+		{sql: "WITH pagamentos AS (SELECT * FROM pagamentos) SELECT id FROM pagamentos", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) pagamentos)", filters: 1},
 		// schema explícito ignora a CTE e precisa receber o filtro da tabela real
-		{sql: "WITH pagamentos AS (SELECT 1 AS id) SELECT id FROM public.pagamentos", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM public.pagamentos WHERE status <> 'estornado') pagamentos", filters: 1},
+		{sql: "WITH pagamentos AS (SELECT 1 AS id) SELECT id FROM public.pagamentos", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM public.pagamentos WHERE status <> 'estornado' OFFSET 0) pagamentos", filters: 1},
 		// sem RECURSIVE não há referência adiante: "a" lê a tabela real pedidos
 		// (conferido no Postgres 16), então não há máscara a aplicar
 		{sql: "WITH a AS (SELECT status FROM pedidos), pedidos AS (SELECT email AS status FROM clientes) SELECT status FROM a", ok: true, want: "SELECT status FROM a LIMIT 501"},
@@ -284,8 +284,8 @@ func TestRecursiveCTE(t *testing.T) {
 		{sql: "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r", ok: true, want: "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r LIMIT 501"},
 		// a coluna mascarada pode circular nua, com a mesma origem nos dois termos
 		{sql: "WITH RECURSIVE r(e) AS (SELECT email FROM clientes UNION ALL SELECT e FROM r) SELECT e FROM r", ok: true, want: "UNION ALL SELECT e FROM r", masks: emailMask},
-		{sql: "WITH RECURSIVE r(id) AS (SELECT id FROM pagamentos UNION ALL SELECT id FROM r WHERE false) SELECT id FROM r", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') pagamentos", filters: 1},
-		{sql: "WITH RECURSIVE r(id) AS (SELECT 1 UNION ALL SELECT g.id FROM r JOIN pagamentos g ON g.pedido_id = r.id) SELECT id FROM r", ok: true, want: "JOIN (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') g", filters: 1},
+		{sql: "WITH RECURSIVE r(id) AS (SELECT id FROM pagamentos UNION ALL SELECT id FROM r WHERE false) SELECT id FROM r", ok: true, want: "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) pagamentos", filters: 1},
+		{sql: "WITH RECURSIVE r(id) AS (SELECT 1 UNION ALL SELECT g.id FROM r JOIN pagamentos g ON g.pedido_id = r.id) SELECT id FROM r", ok: true, want: "JOIN (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) g", filters: 1},
 
 		{sql: "WITH RECURSIVE r(c) AS (SELECT cpf FROM clientes UNION ALL SELECT c FROM r) SELECT c FROM r", want: notAllowed},
 		{sql: "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r, clientes c WHERE c.cpf = '1') SELECT n FROM r", want: notAllowed},
@@ -685,7 +685,7 @@ func TestFixedLeaks(t *testing.T) {
 	// Uma subquery idêntica ao filtro de pagamentos, mas sobre uma CTE de
 	// mesmo nome, passava na re-checagem como a tabela real e perdia a máscara.
 	runGuardCases(t, testGuard(t), []guardCase{
-		{sql: "WITH pagamentos AS (SELECT email AS id, 1 AS pedido_id, 1 AS valor, 'x' AS status, 1 AS pago_em FROM clientes) SELECT p.id FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') p",
+		{sql: "WITH pagamentos AS (SELECT email AS id, 1 AS pedido_id, 1 AS valor, 'x' AS status, 1 AS pago_em FROM clientes) SELECT p.id FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) p",
 			ok: true, want: "SELECT p.id", masks: emailMask, filters: 1},
 	})
 
@@ -722,5 +722,68 @@ func TestDistinctOnMaskedColumns(t *testing.T) {
 	hashed := customGuard(t, "clientes read except(cpf) mask(email: hash)\n")
 	runGuardCases(t, hashed, []guardCase{
 		{sql: "SELECT DISTINCT email FROM clientes", ok: true, want: "SELECT DISTINCT email FROM clientes", masks: []maskWant{{0, policy.MaskHash}}},
+	})
+}
+
+// Máscaras novas no guard: pseudonym preserva igualdade como o hash e pode
+// ser agrupado; as outras só saem nuas na lista do SELECT.
+func TestNewMaskModesInGuard(t *testing.T) {
+	g := customGuard(t, "clientes read except(cpf) mask(nome: pseudonym, email: email, telefone: last4, cidade: bucket 10)\n")
+	runGuardCases(t, g, []guardCase{
+		{sql: "SELECT nome, count(*) FROM clientes GROUP BY nome", ok: true, want: "GROUP BY nome", masks: []maskWant{{0, policy.MaskPseudonym}}},
+		{sql: "SELECT DISTINCT nome FROM clientes", ok: true, want: "SELECT DISTINCT nome", masks: []maskWant{{0, policy.MaskPseudonym}}},
+		{sql: "SELECT id FROM clientes WHERE nome = 'Ana'", want: "mascarada (pseudonym)"},
+		{sql: "SELECT DISTINCT email FROM clientes", want: "mascarada (email)"},
+		{sql: "SELECT id FROM clientes ORDER BY telefone", want: "mascarada (last4)"},
+		{sql: "SELECT cidade, count(*) FROM clientes GROUP BY cidade", want: "mascarada (bucket)"},
+		{sql: "SELECT email, telefone FROM clientes", ok: true, want: "SELECT email, telefone", masks: []maskWant{{0, policy.MaskEmail}, {1, policy.MaskLast4}}},
+	})
+	v, err := g.Check(CmdQuery, "SELECT cidade FROM clientes")
+	if err != nil || len(v.Masks) != 1 || v.Masks[0].Arg != 10 || v.Masks[0].Mask().Text() != "bucket 10" {
+		t.Fatalf("bucket precisa levar o tamanho da faixa até a saída: %+v %v", v, err)
+	}
+}
+
+// Os nomes de coluna precisam bater com os do Postgres: NATURAL JOIN e
+// referências externas dependem deles. Achado pelo fuzz (NATURAL JOIN com
+// coalesce comparava o email mascarado).
+func TestColumnNamesFollowPostgres(t *testing.T) {
+	cases := map[string]string{
+		"SELECT coalesce(nome, 'x') FROM clientes":                   "coalesce",
+		"SELECT CASE WHEN true THEN 1 END":                           "case",
+		"SELECT CASE WHEN true THEN 1 END::text":                     "text",
+		"SELECT CASE WHEN true THEN 'x' ELSE nome END FROM clientes": "nome",
+		"SELECT CASE WHEN true THEN 'x' ELSE 'y' END":                "case",
+		"SELECT nome::text FROM clientes":                            "nome",
+		"SELECT 'x'::varchar":                                        "varchar",
+		"SELECT nullif(nome, '') FROM clientes":                      "nullif",
+		"SELECT greatest(1, 2)":                                      "greatest",
+		"SELECT least(1, 2)":                                         "least",
+		"SELECT EXISTS (SELECT 1)":                                   "exists",
+		"SELECT ARRAY[1, 2]":                                         "array",
+		"SELECT (SELECT nome FROM clientes LIMIT 1)":                 "nome",
+		"SELECT lower(nome) FROM clientes":                           "lower",
+		"SELECT current_date":                                        "current_date",
+		"SELECT 1 + 1":                                               "?column?",
+	}
+	for sql, want := range cases {
+		tree, err := pg_query.Parse(sql)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := tree.Stmts[0].Stmt.GetSelectStmt().TargetList[0].GetResTarget()
+		if got := colName(rt); got != want {
+			t.Errorf("%s: %q, esperava %q", sql, got, want)
+		}
+	}
+}
+
+func TestNaturalJoinWithMaskedOrUnnamedColumns(t *testing.T) {
+	runGuardCases(t, testGuard(t), []guardCase{
+		{sql: "SELECT s2.id FROM (SELECT coalesce('a@b.com', 'x')) s1 NATURAL JOIN (SELECT email AS coalesce, id FROM clientes) s2", want: masked},
+		{sql: "SELECT s2.id FROM (SELECT 'a@b.com'::text) s1 NATURAL JOIN (SELECT email AS text, id FROM clientes) s2", want: masked},
+		{sql: "SELECT s2.id FROM (SELECT CASE WHEN true THEN 'a@b.com' ELSE cidade END FROM clientes) s1 NATURAL JOIN (SELECT email AS cidade, id FROM clientes) s2", want: masked},
+		{sql: "SELECT s2.id FROM (SELECT 1 + 1) s1 NATURAL JOIN (SELECT id FROM clientes) s2", want: "NATURAL JOIN com coluna sem nome"},
+		{sql: "SELECT s2.id FROM (SELECT 1 AS id) s1 NATURAL JOIN (SELECT id FROM clientes) s2", ok: true, want: "NATURAL JOIN"},
 	})
 }

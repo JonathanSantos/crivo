@@ -36,10 +36,13 @@ clean:
 	rm -rf bin dist
 
 # Cria a tag anotada e publica: o CI (job release) gera o GitHub Release com
-# os binários de Linux, macOS (arm64 e Intel) e Windows.
+# os binários de Linux (amd64 e arm64), macOS (arm64 e Intel) e Windows, e
+# commita na main a fórmula do Homebrew e o manifesto do Scoop. Por isso o
+# pull antes: a main local pode estar atrás desse commit do release anterior.
 #   make tag TAG=v0.2.0
 tag:
 	@case "$(TAG)" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "uso: make tag TAG=vX.Y.Z"; exit 1;; esac
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "árvore suja: commite antes de taguear"; exit 1; }
+	git pull --ff-only origin main
 	git tag -a "$(TAG)" -m "$(TAG)"
 	git push origin main "$(TAG)"

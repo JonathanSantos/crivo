@@ -9,7 +9,7 @@
 
 **Site:** [jonathansantos.github.io/crivo](https://jonathansantos.github.io/crivo/), com uma demo que mostra a resposta real do Crivo a cada query.
 
-**Download do binário pronto** ([todas as versões](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
+**Download do binário pronto** ([todas as versões](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Linux arm64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-arm64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
 
 **Toda query passa pelo crivo.** O Crivo transforma um arquivo de política (`.crivo`) num CLI local de acesso a um Postgres de pré-produção, mais uma skill que ensina o GitHub Copilot do VS Code a usá-lo. Toda query que a IA envia passa pelo parser real do Postgres (pg_query) antes de chegar ao banco, e só executa o que a política permite.
 
@@ -26,6 +26,18 @@
 > O adversário é a IA, não uma pessoa. Quem tem acesso à máquina consegue extrair a senha do keychain ou alterar o binário. Nunca use credenciais de produção e não distribua binários gerados.
 
 ## Instalação
+
+**Homebrew** (macOS e Linux) e **Scoop** (Windows), direto deste repositório:
+
+```bash
+brew tap JonathanSantos/crivo https://github.com/JonathanSantos/crivo && brew install crivo
+```
+
+```bash
+scoop bucket add crivo https://github.com/JonathanSantos/crivo && scoop install crivo
+```
+
+O release de cada versão atualiza a fórmula e o manifesto sozinho. Detalhes, verificação de checksums e de procedência (`gh attestation verify`) em [docs/install.md](docs/install.md).
 
 **Binário pronto** (sem Go nem compilador C): baixe o arquivo da sua plataforma na [página de releases](https://github.com/JonathanSantos/crivo/releases/latest) ou com `curl`. Baixar pelo terminal evita a quarentena do Gatekeeper no macOS, que recusa binários sem assinatura de desenvolvedor vindos do navegador.
 
@@ -95,24 +107,42 @@ Exemplo completo em [examples/vendas.crivo](examples/vendas.crivo) e casos de te
 | `where <expr>` | Filtro de linha: em leitura a tabela vira subquery filtrada (mantendo o alias); em `update`/`delete` entra com `AND` no `WHERE`. Vai até a próxima vírgula de nível zero. |
 | `max N` | Teto de linhas afetadas por escrita (padrão 50). Acima disso: rollback e bloqueio. |
 | `limit N` | Teto de linhas por query para a tabela (menor que o global). |
-| `mask(col: partial\|redact\|hash)` | Máscara aplicada no resultado. Coluna mascarada só aparece nua na lista do SELECT. |
+| `mask(col: modo)` | Máscara aplicada no resultado. Modos: `partial` (jo***@dominio), `redact` (***), `hash` (estável só na execução), `email` (só o domínio), `last4` (4 últimos caracteres), `month` (data vira AAAA-MM), `bucket N` (número vira faixa de N), `pseudonym` (estável entre execuções, chave local). Coluna mascarada só aparece nua na lista do SELECT; `hash` e `pseudonym` também podem ir em `GROUP BY`/`DISTINCT`. |
 | `deny` / sem regra | A tabela não existe para a IA. `pg_*`, `pg_catalog` e `information_schema` são sempre bloqueados. |
 | `## texto` | Descrição da tabela na skill e no `describe` (precisa estar logo acima da regra). |
 | linha começando com espaço | Continua a regra anterior. |
+| `query nome(p tipo, ...) "SELECT ... $1"` | Consulta pronta, chamada por `vendas run nome p=valor` e como ferramenta MCP `q_nome`. Só leitura; tipos `int`, `numeric`, `text`, `date`, `bool`. Os valores entram como constantes na árvore e a consulta passa pelo guard inteiro a cada chamada. |
+| `expires AAAA-MM-DD` | O binário para de acessar o banco depois desse dia (policy e skill continuam). |
+| `cost N` | Recusa a query cujo custo estimado pelo `EXPLAIN` passe de N, antes de executar. |
+| `rate N/min` · `quota N rows/day` | Execuções por minuto e linhas por dia. Contam pela auditoria local: é trava contra IA em loop, não fronteira de segurança. |
+| `approval writes` | O `exec` real só deixa a escrita pendente; uma pessoa executa com `vendas approve <id>` no terminal. |
+| `audit syslog` | Além do arquivo, manda cada linha de auditoria ao syslog (macOS e Linux). |
 
-Precedência: nome exato vence padrão; entre padrões, o de maior prefixo literal; empate, `deny` vence.
+Precedência: nome exato vence padrão; entre padrões, o de maior prefixo literal; empate, `deny` vence. As diretivas novas (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`) não podem ser nome de tabela.
 
 ## Comandos
 
-**Ferramenta (`crivo`, sem política embutida):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. Nenhum executa SQL da IA. `check`, `test` e `grants` aceitam `--schema-sql arquivo.sql` para ler o schema de um DDL (o `testdata/schema.sql` ou a saída de `pg_dump --schema-only`) sem conectar ao banco:
+**Ferramenta (`crivo`, sem política embutida):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. Nenhum executa SQL da IA. O `init` já comenta uma sugestão de regra por tabela, reconhecendo pelo nome colunas de documento, e-mail, telefone, senha, cartão, nascimento, renda e endereço; o `check` avisa quando uma delas sai sem máscara. `check --lock` grava `<política>.lock` com as colunas que cada tabela expõe, e os próximos `check` e `build` avisam de colunas novas. `check --json` é a saída usada pela [extensão do VS Code](editors/vscode). `check`, `test` e `grants` aceitam `--schema-sql arquivo.sql` para ler o schema de um DDL (o `testdata/schema.sql` ou a saída de `pg_dump --schema-only`) sem conectar ao banco:
 
 ```bash
 crivo test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql
 ```
 
-**Binário gerado (`vendas`, modo base):** `policy`, `tables`, `describe <tabela>`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table`, `--json-errors`, `-f arquivo.sql`. O modo é decidido pelo slot embutido; não há flag nem variável que troque de modo, então a IA não alcança `build` por um binário gerado.
+**Binário gerado (`vendas`, modo base):** `policy`, `tables`, `describe <tabela> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [consulta] [p=valor...]`, `approve|pending|reject` (com `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f arquivo.sql`. O modo é decidido pelo slot embutido; não há flag nem variável que troque de modo, então a IA não alcança `build` por um binário gerado.
 
-Códigos de saída: `0` sucesso, `1` bug, `2` barrado pelo Crivo, `3` SQL inválido, `4` erro do banco, `5` configuração ou segredo ausente.
+Códigos de saída: `0` sucesso, `1` bug, `2` barrado pelo Crivo (inclusive teto de custo, `rate` e `quota`), `3` SQL inválido, `4` erro do banco, `5` configuração, segredo ausente ou política vencida, `6` escrita pendente de aprovação.
+
+### Aprovação de escrita
+
+Com `approval writes`, a escrita real deixa de depender do clique do VS Code e passa a valer igual no Copilot, no Claude Code e em qualquer cliente MCP:
+
+```bash
+vendas exec "UPDATE pedidos SET status = 'pago' WHERE id = 7"   # valida, simula e sai com 6: pendente #a3f2c1
+vendas pending                                                  # lista as pendências (expiram em 1 hora)
+vendas approve a3f2c1                                           # só a pessoa, no terminal: mostra o SQL, pede o id de novo e executa
+```
+
+O que impede a IA de aprovar sozinha: `approve` exige um terminal interativo e que o id seja digitado de novo, não existe no MCP e nunca entra numa regra de auto-aprovação do VS Code (o `skill vscode` gera uma regra explícita pedindo o clique). Na aprovação, o SQL original passa pelo guard outra vez, contra o schema atual; o SQL guardado na pendência nunca é executado direto.
 
 ## Usuário read-only: a estratégia recomendada
 
@@ -169,6 +199,8 @@ make test-integration                                        # Postgres real (de
 make fuzz                                                    # go test -fuzz no sqlguard.Guard
 ```
 
+A extensão do VS Code para arquivos `.crivo` (realce e diagnósticos do `crivo check`) fica em [editors/vscode](editors/vscode). O fuzz de vazamentos (`internal/integration`) gera queries, roda as aceitas no Postgres e falha se algum valor bloqueado ou mascarado aparecer em claro.
+
 O `make test` não precisa de banco nem de rede e nunca toca a HOME, o cache ou o keychain reais: os testes usam `internal/testenv`, que aponta tudo para pastas temporárias e um keychain em memória. Inclui um teste de ponta a ponta (`cmd/crivo`) que compila o binário e percorre o fluxo com o schema vindo do DDL (`go test -short` o pula).
 
 Os testes de integração usam, nesta ordem, `CRIVO_TEST_DSN` (o teste cria e apaga o schema `crivo_it` e papéis temporários `crivo_it_*`), um Postgres descartável criado com `initdb` quando ele está no `PATH` (o `make test-integration` liga isso com `CRIVO_TEST_LOCALPG=1`), ou testcontainers-go quando há Docker; sem nenhum, são pulados. Eles exercitam o binário gerado nos dois modos, CLI e MCP, o `init` e o `check` conectados, a recuperação quando o schema muda e aplicam o SQL do `crivo grants` para conferir que o próprio banco passa a recusar o que a política nega. Os golden files se regravam com `go test ./internal/policy ./internal/skill ./internal/cli/tool -update`.
@@ -210,4 +242,10 @@ Pontos em que a especificação deixava espaço, e o que foi escolhido:
 - **`WITH RECURSIVE`:** o Postgres deixa cada CTE citar as definidas depois dela; o Crivo recusa essa referência adiante (e o próprio nome fora do termo recursivo), em vez de resolver o nome como a tabela real de mesmo nome.
 - **Upsert:** `INSERT ... ON CONFLICT DO UPDATE` é recusado em tabela com filtro `where` no read ou no update, porque altera a linha existente sem passar pelo `WHERE`. `ON CONFLICT DO NOTHING` continua aceito.
 - **JSON com colunas repetidas:** `SELECT a.id, b.id` sai com as chaves `id` e `id_2`, para nenhum valor sumir.
+- **Filtro de linha como barreira:** a subquery do filtro de leitura termina em `OFFSET 0`, que impede o Postgres de empurrar condições da query para dentro dela; e em `UPDATE`/`DELETE` o `WHERE` da IA vai dentro de `CASE WHEN <filtros> THEN ... ELSE false END`. Assim uma função da query nunca roda numa linha escondida, cujo erro (ex.: divisão por zero) diria que ela existe. O custo é perder o índice na tabela filtrada: em 1 milhão de linhas, uma leitura por chave passa de 0,016 ms para 80 ms e um `UPDATE` por chave de 0,19 ms para 42 ms (números no [ADR 0001](docs/adr/0001-portoes-e-consultas.md)). Tabelas sem `where` não mudam. Achado pelo fuzz de vazamentos.
+- **`NATURAL JOIN`:** o guard nomeia as colunas como o Postgres (`coalesce`, `case`, cast vira o nome do tipo) e recusa `NATURAL JOIN` quando algum lado tem coluna sem nome (`?column?`). Antes, uma diferença de nome fazia a junção comparar uma coluna mascarada sem a checagem. Achado pelo fuzz de vazamentos.
+- **Erros do banco sem valores:** em erros de dado (SQLSTATE 22) e de restrição (23), o texto entre aspas sai cortado da mensagem e da auditoria, porque pode ser o conteúdo de uma linha escondida ou de uma coluna mascarada.
+- **Portões no binário, não no cliente:** validade, `rate`, `quota`, custo e aprovação ficam abaixo do CLI e do MCP e são conferidos a cada chamada (o servidor MCP fica aberto). Ver [ADR 0001](docs/adr/0001-portoes-e-consultas.md).
+- **`pseudonym`:** estável entre execuções nesta máquina (chave aleatória por política em `~/.crivo/keys/<name>.key`, 0600), para a IA cruzar resultados de consultas diferentes. Isso também permite comparar igualdade entre execuções, coisa que o `hash` não permite; sem a chave, a query é recusada.
+- **`rate` e `quota`** contam pela auditoria. Se ela não pode ser lida ou gravada, a execução é recusada; a rotação do log (10 MB, 3 arquivos) não zera a conta.
 - Tabelas com nome de diretiva (`name`, `limit`, ...) não podem ter regra na v1; partições não aparecem no schema (consulte a tabela-mãe).

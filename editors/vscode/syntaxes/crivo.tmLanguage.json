@@ -1,0 +1,426 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Crivo",
+  "scopeName": "source.crivo",
+  "fileTypes": ["crivo"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#directives" },
+    { "include": "#continuation" },
+    { "include": "#rule" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "comment": "## no início da linha (pode ter espaço antes): descrição da regra seguinte",
+          "match": "^\\s*(##)(.*)$",
+          "name": "comment.line.double-number-sign.documentation.crivo",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.crivo" }
+          }
+        },
+        {
+          "comment": "# só é comentário no início da linha; no meio (URL, where) é texto",
+          "match": "^\\s*(#).*$",
+          "name": "comment.line.number-sign.crivo",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.crivo" }
+          }
+        }
+      ]
+    },
+
+    "directives": {
+      "patterns": [
+        {
+          "begin": "^(name)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.name.crivo",
+          "patterns": [
+            { "match": "[a-z][a-z0-9]*(?:-[a-z0-9]+)*", "name": "entity.name.policy.crivo" }
+          ]
+        },
+        {
+          "begin": "^(about)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.about.crivo",
+          "patterns": [{ "include": "#string-double" }]
+        },
+        {
+          "begin": "^(env)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.env.crivo",
+          "patterns": [
+            { "match": "\\b(?:dev|preprod|prod)\\b", "name": "constant.language.env.crivo" }
+          ]
+        },
+        {
+          "begin": "^(connect)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.connect.crivo",
+          "patterns": [
+            { "match": "\\S+", "name": "string.unquoted.url.connect.crivo" }
+          ]
+        },
+        {
+          "begin": "^(secret)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.secret.crivo",
+          "patterns": [
+            {
+              "match": "\\b(env)(:)([A-Za-z_][A-Za-z0-9_]*)",
+              "captures": {
+                "1": { "name": "support.constant.secret.crivo" },
+                "2": { "name": "punctuation.separator.colon.crivo" },
+                "3": { "name": "variable.other.env.crivo" }
+              }
+            },
+            { "match": "\\b(?:keychain|prompt)\\b", "name": "support.constant.secret.crivo" }
+          ]
+        },
+        {
+          "begin": "^(schema)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.schema.crivo",
+          "patterns": [
+            { "match": "\\b[a-z_][a-z0-9_]*\\b", "name": "entity.name.namespace.crivo" }
+          ]
+        },
+        {
+          "begin": "^(limit)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.limit.crivo",
+          "patterns": [
+            { "match": "\\b\\d+\\b", "name": "constant.numeric.integer.crivo" },
+            { "match": "\\brows\\b", "name": "keyword.other.unit.crivo" }
+          ]
+        },
+        {
+          "begin": "^(timeout)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.timeout.crivo",
+          "patterns": [
+            { "match": "\\b(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+", "name": "constant.numeric.duration.crivo" }
+          ]
+        },
+        {
+          "begin": "^(functions)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.functions.crivo",
+          "patterns": [
+            { "match": "\\b[a-z_][a-z0-9_]*\\b", "name": "entity.name.function.crivo" },
+            { "match": ",", "name": "punctuation.separator.comma.crivo" }
+          ]
+        },
+        {
+          "begin": "^(expires)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.expires.crivo",
+          "patterns": [
+            { "match": "\\b\\d{4}-\\d{2}-\\d{2}\\b", "name": "constant.numeric.date.crivo" }
+          ]
+        },
+        {
+          "begin": "^(cost)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.cost.crivo",
+          "patterns": [
+            { "match": "\\b\\d+(?:\\.\\d+)?\\b", "name": "constant.numeric.crivo" }
+          ]
+        },
+        {
+          "begin": "^(rate)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.rate.crivo",
+          "patterns": [
+            {
+              "match": "\\b(\\d+)(/)(min)\\b",
+              "captures": {
+                "1": { "name": "constant.numeric.integer.crivo" },
+                "2": { "name": "punctuation.separator.slash.crivo" },
+                "3": { "name": "keyword.other.unit.crivo" }
+              }
+            }
+          ]
+        },
+        {
+          "begin": "^(quota)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.quota.crivo",
+          "patterns": [
+            {
+              "match": "\\b(rows)(/)(day)\\b",
+              "captures": {
+                "1": { "name": "keyword.other.unit.crivo" },
+                "2": { "name": "punctuation.separator.slash.crivo" },
+                "3": { "name": "keyword.other.unit.crivo" }
+              }
+            },
+            { "match": "\\b\\d+\\b", "name": "constant.numeric.integer.crivo" }
+          ]
+        },
+        {
+          "begin": "^(approval)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.approval.crivo",
+          "patterns": [
+            { "match": "\\bwrites\\b", "name": "constant.language.approval.crivo" }
+          ]
+        },
+        {
+          "begin": "^(audit)\\b",
+          "beginCaptures": { "1": { "name": "keyword.other.directive.crivo" } },
+          "end": "$",
+          "name": "meta.directive.audit.crivo",
+          "patterns": [
+            { "match": "\\bsyslog\\b", "name": "constant.language.audit.crivo" }
+          ]
+        },
+        {
+          "begin": "^(query)\\b(?:\\s+([a-z_][a-z0-9_]*))?",
+          "beginCaptures": {
+            "1": { "name": "keyword.other.directive.crivo" },
+            "2": { "name": "entity.name.function.query.crivo" }
+          },
+          "end": "$",
+          "name": "meta.directive.query.crivo",
+          "patterns": [
+            { "include": "#query-params" },
+            { "include": "#query-sql-string" }
+          ]
+        }
+      ]
+    },
+
+    "query-params": {
+      "begin": "\\(",
+      "beginCaptures": { "0": { "name": "punctuation.section.parens.begin.crivo" } },
+      "end": "\\)|$",
+      "endCaptures": { "0": { "name": "punctuation.section.parens.end.crivo" } },
+      "name": "meta.parameters.crivo",
+      "patterns": [
+        {
+          "match": "\\b([a-z_][a-z0-9_]*)\\s+([a-z_][a-z0-9_]*(?:\\[\\])?)",
+          "captures": {
+            "1": { "name": "variable.parameter.crivo" },
+            "2": { "name": "storage.type.crivo" }
+          }
+        },
+        { "match": ",", "name": "punctuation.separator.comma.crivo" }
+      ]
+    },
+
+    "query-sql-string": {
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.crivo" } },
+      "end": "\"|$",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.crivo" } },
+      "name": "string.quoted.double.crivo",
+      "contentName": "meta.embedded.sql.crivo",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.crivo" },
+        { "include": "#sql-string-single" },
+        { "include": "#sql-tokens" }
+      ]
+    },
+
+    "string-double": {
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.crivo" } },
+      "end": "\"|$",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.crivo" } },
+      "name": "string.quoted.double.crivo",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.crivo" }
+      ]
+    },
+
+    "rule": {
+      "comment": "Linha de regra: tabela (schema.tabela, padrões com *) e ações. Continua nas linhas seguintes que começam com espaço.",
+      "begin": "^(?:([a-z_][a-z0-9_]*)(\\.))?([A-Za-z0-9_*]+)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.namespace.crivo" },
+        "2": { "name": "punctuation.accessor.dot.crivo" },
+        "3": {
+          "name": "entity.name.type.table.crivo",
+          "patterns": [{ "match": "\\*", "name": "keyword.operator.wildcard.crivo" }]
+        }
+      },
+      "end": "^(?![ \\t]+\\S)|^(?=[ \\t]*##)",
+      "name": "meta.rule.crivo",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#rule-body" }
+      ]
+    },
+
+    "continuation": {
+      "comment": "Continuação sem regra aberta (ex.: depois de um comentário): realça o corpo mesmo assim.",
+      "begin": "^[ \\t]+(?=[^\\s#])",
+      "end": "^(?![ \\t]+\\S)|^(?=[ \\t]*##)",
+      "name": "meta.rule.continuation.crivo",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#rule-body" }
+      ]
+    },
+
+    "rule-body": {
+      "patterns": [
+        { "match": "\\bdeny\\b", "name": "keyword.control.deny.crivo" },
+        {
+          "begin": "\\b(read|insert|update|delete)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.verb.crivo" },
+            "2": { "name": "punctuation.section.parens.begin.crivo" }
+          },
+          "end": "\\)",
+          "endCaptures": { "0": { "name": "punctuation.section.parens.end.crivo" } },
+          "name": "meta.columns.crivo",
+          "patterns": [{ "include": "#column-list" }]
+        },
+        { "match": "\\b(?:read|insert|update|delete)\\b", "name": "keyword.control.verb.crivo" },
+        {
+          "begin": "\\b(except)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "storage.modifier.except.crivo" },
+            "2": { "name": "punctuation.section.parens.begin.crivo" }
+          },
+          "end": "\\)",
+          "endCaptures": { "0": { "name": "punctuation.section.parens.end.crivo" } },
+          "name": "meta.columns.except.crivo",
+          "patterns": [{ "include": "#column-list" }]
+        },
+        {
+          "begin": "\\b(mask)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "storage.modifier.mask.crivo" },
+            "2": { "name": "punctuation.section.parens.begin.crivo" }
+          },
+          "end": "\\)",
+          "endCaptures": { "0": { "name": "punctuation.section.parens.end.crivo" } },
+          "name": "meta.mask.crivo",
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "\\b([a-z_][a-z0-9_]*)\\s*(:)\\s*(bucket)\\s+(\\d+)\\b",
+              "captures": {
+                "1": { "name": "variable.other.column.crivo" },
+                "2": { "name": "punctuation.separator.colon.crivo" },
+                "3": { "name": "support.constant.mask-mode.crivo" },
+                "4": { "name": "constant.numeric.integer.crivo" }
+              }
+            },
+            {
+              "match": "\\b([a-z_][a-z0-9_]*)\\s*(:)\\s*(partial|redact|hash|email|last4|month|bucket|pseudonym)\\b",
+              "captures": {
+                "1": { "name": "variable.other.column.crivo" },
+                "2": { "name": "punctuation.separator.colon.crivo" },
+                "3": { "name": "support.constant.mask-mode.crivo" }
+              }
+            },
+            {
+              "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+              "captures": {
+                "1": { "name": "variable.other.column.crivo" },
+                "2": { "name": "punctuation.separator.colon.crivo" }
+              }
+            },
+            { "match": ",", "name": "punctuation.separator.comma.crivo" }
+          ]
+        },
+        {
+          "comment": "where vai até a próxima vírgula de nível zero (fora de parênteses e aspas) ou o fim da regra",
+          "begin": "\\b(where)\\b",
+          "beginCaptures": { "1": { "name": "storage.modifier.where.crivo" } },
+          "end": "(?=,)|^(?![ \\t]+\\S)|^(?=[ \\t]*##)",
+          "name": "meta.where.crivo",
+          "contentName": "meta.embedded.expression.sql.crivo",
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#sql" }
+          ]
+        },
+        {
+          "match": "\\b(max|limit)\\s+(\\d+)\\b",
+          "captures": {
+            "1": { "name": "storage.modifier.crivo" },
+            "2": { "name": "constant.numeric.integer.crivo" }
+          }
+        },
+        { "match": "\\b(?:max|limit)\\b", "name": "storage.modifier.crivo" },
+        { "match": ",", "name": "punctuation.separator.comma.crivo" }
+      ]
+    },
+
+    "column-list": {
+      "patterns": [
+        { "include": "#comments" },
+        { "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b", "name": "variable.other.column.crivo" },
+        { "match": ",", "name": "punctuation.separator.comma.crivo" }
+      ]
+    },
+
+    "sql": {
+      "comment": "Subconjunto de SQL feito à mão: strings e parênteses vêm antes, para a vírgula dentro deles não encerrar o where.",
+      "patterns": [
+        { "include": "#sql-string-single" },
+        {
+          "begin": "\"",
+          "end": "\"(?!\")",
+          "name": "string.quoted.double.identifier.sql",
+          "patterns": [{ "match": "\"\"", "name": "constant.character.escape.sql" }]
+        },
+        {
+          "begin": "\\(",
+          "beginCaptures": { "0": { "name": "punctuation.section.parens.begin.sql" } },
+          "end": "\\)",
+          "endCaptures": { "0": { "name": "punctuation.section.parens.end.sql" } },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#sql" }
+          ]
+        },
+        { "include": "#sql-tokens" }
+      ]
+    },
+
+    "sql-string-single": {
+      "begin": "'",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.sql" } },
+      "end": "'(?!')",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.sql" } },
+      "name": "string.quoted.single.sql",
+      "patterns": [{ "match": "''", "name": "constant.character.escape.sql" }]
+    },
+
+    "sql-tokens": {
+      "patterns": [
+        { "match": "(?i)\\b(?:null|true|false)\\b", "name": "constant.language.sql" },
+        {
+          "match": "(?i)\\b(?:and|or|not|in|is|like|ilike|similar|between|exists|any|all|some|case|when|then|else|end|as|select|from|where|join|on|group|by|order|having|limit|offset|asc|desc|distinct|interval|cast|current_date|current_time|current_timestamp|current_user|localtimestamp)\\b",
+          "name": "keyword.other.sql"
+        },
+        { "match": "\\$\\d+", "name": "variable.parameter.positional.sql" },
+        { "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", "captures": { "1": { "name": "entity.name.function.sql" } } },
+        { "match": "\\b\\d+(?:\\.\\d+)?\\b", "name": "constant.numeric.sql" },
+        { "match": "<>|!=|<=|>=|\\|\\||::|[=<>+\\-*/%]", "name": "keyword.operator.sql" }
+      ]
+    }
+  }
+}

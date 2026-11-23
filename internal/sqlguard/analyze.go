@@ -317,12 +317,14 @@ func (a *analyzer) checkOrigin(o origin, ctx useCtx, label string) {
 	if !act.AllowsCol(o.col) {
 		a.denyf(o.t.rule, strings.Join(a.readableCols(o.t), ", "), "coluna %q não está liberada", label)
 	}
-	switch act.MaskOf(o.col) {
-	case "":
-	case policy.MaskHash:
+	switch mode := act.MaskOf(o.col); {
+	case mode == "":
+	case mode.EqualityStable():
+		// hash e pseudonym: o mesmo valor vira sempre o mesmo texto, então
+		// agrupar não revela nada além do que a própria saída já mostra
 		if ctx == useGeneral {
 			a.denyf(o.t.rule, "a coluna nua na lista do SELECT, em GROUP BY ou em count(DISTINCT ...)",
-				"coluna %q é mascarada (hash) e não pode ser usada em filtro, junção, ordenação ou expressão", label)
+				"coluna %q é mascarada (%s) e não pode ser usada em filtro, junção, ordenação ou expressão", label, mode)
 		}
 	default:
 		if ctx != useBare {
@@ -662,8 +664,8 @@ func (a *analyzer) rootSelect(sel *pg_query.SelectStmt) {
 	a.rootLimit(sel)
 	for i, c := range cols {
 		for _, o := range c.origins {
-			if m := o.t.read.MaskOf(o.col); m != "" {
-				a.masks = append(a.masks, OutputMask{Index: i, Label: c.labelOrName(), Mode: m, Column: o.t.name + "." + o.col})
+			if m, ok := o.t.read.MaskFor(o.col); ok {
+				a.masks = append(a.masks, OutputMask{Index: i, Label: c.labelOrName(), Mode: m.Mode, Arg: m.Arg, Column: o.t.name + "." + o.col})
 				break
 			}
 		}
@@ -713,24 +715,112 @@ func (a *analyzer) limitOffset(sel *pg_query.SelectStmt) {
 	}
 }
 
+// colName é o nome que o Postgres dá à coluna de saída (FigureColname):
+// alias, nome da coluna, nome da função, ou uma palavra fixa para algumas
+// expressões. Precisa bater com o Postgres, porque NATURAL JOIN e
+// referências externas usam esses nomes; "?column?" é o que ele não nomeia.
 func colName(rt *pg_query.ResTarget) string {
 	if rt.Name != "" {
 		return rt.Name
 	}
-	switch v := rt.Val.Node.(type) {
-	case *pg_query.Node_ColumnRef:
-		f, _ := refFields(v.ColumnRef)
-		if len(f) > 0 {
-			return f[len(f)-1]
-		}
-	case *pg_query.Node_FuncCall:
-		if n, ok := funcName(v.FuncCall); ok {
-			return n
-		}
-	case *pg_query.Node_TypeCast:
-		return colName(&pg_query.ResTarget{Val: v.TypeCast.Arg})
+	if n, _ := figureColname(rt.Val); n != "" {
+		return n
 	}
 	return "?column?"
+}
+
+// figureColname segue o FigureColnameInternal do Postgres: devolve o nome e
+// a força dele (2 forte, 1 fraco). Um cast só troca o nome do que está por
+// baixo quando ele é fraco: CASE ... END::text vira "text", col::text fica "col".
+func figureColname(n *pg_query.Node) (string, int) {
+	if n == nil {
+		return "", 0
+	}
+	switch v := n.Node.(type) {
+	case *pg_query.Node_ColumnRef:
+		if f, _ := refFields(v.ColumnRef); len(f) > 0 && f[len(f)-1] != "*" {
+			return f[len(f)-1], 2
+		}
+	case *pg_query.Node_AIndirection:
+		for i := len(v.AIndirection.Indirection) - 1; i >= 0; i-- {
+			if s := v.AIndirection.Indirection[i].GetString_(); s != nil {
+				return s.Sval, 2
+			}
+		}
+		return figureColname(v.AIndirection.Arg)
+	case *pg_query.Node_FuncCall:
+		if name, ok := funcName(v.FuncCall); ok {
+			return name, 2
+		}
+	case *pg_query.Node_TypeCast:
+		name, strength := figureColname(v.TypeCast.Arg)
+		if strength <= 1 {
+			if tn := v.TypeCast.TypeName; tn != nil && len(tn.Names) > 0 {
+				if s := tn.Names[len(tn.Names)-1].GetString_(); s != nil {
+					return s.Sval, 1
+				}
+			}
+		}
+		return name, strength
+	case *pg_query.Node_CaseExpr:
+		// o nome do ELSE vale se for forte (CASE ... ELSE status END → status)
+		if name, strength := figureColname(v.CaseExpr.Defresult); strength > 1 {
+			return name, strength
+		}
+		return "case", 1
+	case *pg_query.Node_CoalesceExpr:
+		return "coalesce", 2
+	case *pg_query.Node_MinMaxExpr:
+		if v.MinMaxExpr.Op == pg_query.MinMaxOp_IS_LEAST {
+			return "least", 2
+		}
+		return "greatest", 2
+	case *pg_query.Node_AArrayExpr:
+		return "array", 2
+	case *pg_query.Node_RowExpr:
+		return "row", 2
+	case *pg_query.Node_AExpr:
+		if v.AExpr.Kind == pg_query.A_Expr_Kind_AEXPR_NULLIF {
+			return "nullif", 2
+		}
+	case *pg_query.Node_SubLink:
+		switch v.SubLink.SubLinkType {
+		case pg_query.SubLinkType_EXISTS_SUBLINK:
+			return "exists", 2
+		case pg_query.SubLinkType_ARRAY_SUBLINK:
+			return "array", 2
+		case pg_query.SubLinkType_EXPR_SUBLINK:
+			if sel := v.SubLink.Subselect.GetSelectStmt(); sel != nil && len(sel.TargetList) == 1 {
+				if rt := sel.TargetList[0].GetResTarget(); rt != nil {
+					if rt.Name != "" {
+						return rt.Name, 2
+					}
+					return figureColname(rt.Val)
+				}
+			}
+		}
+	case *pg_query.Node_SqlvalueFunction:
+		if name := sqlValueName(v.SqlvalueFunction.Op); name != "" {
+			return name, 2
+		}
+	}
+	return "", 0
+}
+
+func sqlValueName(op pg_query.SQLValueFunctionOp) string {
+	switch op {
+	case pg_query.SQLValueFunctionOp_SVFOP_CURRENT_DATE:
+		return "current_date"
+	case pg_query.SQLValueFunctionOp_SVFOP_CURRENT_TIME, pg_query.SQLValueFunctionOp_SVFOP_CURRENT_TIME_N:
+		return "current_time"
+	case pg_query.SQLValueFunctionOp_SVFOP_CURRENT_TIMESTAMP, pg_query.SQLValueFunctionOp_SVFOP_CURRENT_TIMESTAMP_N:
+		return "current_timestamp"
+	case pg_query.SQLValueFunctionOp_SVFOP_LOCALTIME, pg_query.SQLValueFunctionOp_SVFOP_LOCALTIME_N:
+		return "localtime"
+	case pg_query.SQLValueFunctionOp_SVFOP_LOCALTIMESTAMP, pg_query.SQLValueFunctionOp_SVFOP_LOCALTIMESTAMP_N:
+		return "localtimestamp"
+	}
+	return ""
 }
 
 func (a *analyzer) withClause(wc *pg_query.WithClause, outer *scope, ctes *cteEnv) *cteEnv {
@@ -1244,6 +1334,18 @@ func (a *analyzer) fromItem(n *pg_query.Node, s *scope, ctes *cteEnv) []*entry {
 		subtree := append(append([]*entry{}, left...), right...)
 		using, _ := stringList(j.UsingClause)
 		if j.IsNatural {
+			// O NATURAL junta pelos nomes que o Postgres dá às colunas. Se um
+			// lado tem coluna que o guard não sabe nomear como ele, a junção
+			// poderia comparar uma coluna mascarada sem passar pela checagem.
+			for _, side := range [][]*entry{left, right} {
+				for _, e := range side {
+					for _, c := range e.columns() {
+						if c.name == "?column?" {
+							a.denyf(nil, "JOIN ... ON com as colunas explícitas, ou alias em toda expressão da subquery", "NATURAL JOIN com coluna sem nome não é aceito")
+						}
+					}
+				}
+			}
 			using = commonColumns(left, right)
 		}
 		for _, name := range using {

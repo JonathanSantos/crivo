@@ -165,3 +165,37 @@ func TestVSCodeDryRunRule(t *testing.T) {
 		}
 	}
 }
+
+// A skill de uma política com todos os recursos opcionais: consultas prontas,
+// aprovação de escrita, limites, validade e máscaras novas.
+func TestSkillGoldenWithFeatures(t *testing.T) {
+	src, err := os.ReadFile("../../examples/recursos.crivo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, diags := policy.Parse("recursos.crivo", string(src))
+	if diags.HasErrors() {
+		t.Fatal(diags.Error())
+	}
+	got, err := Generate(p, Options{Bin: "vendas-completo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "recursos.SKILL.md", got)
+	for _, want := range []string{
+		"vendas-completo run pedidos_do_cliente cliente_id=<int>",
+		"vendas-completo approve <id>",
+		"Nunca rode approve você mesmo",
+		"No máximo 30 execuções por minuto",
+		"O acesso vale até 2027-06-30",
+		"nome sai como pseudônimo",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("skill sem %q", want)
+		}
+	}
+	rules := VSCodeSettings(p, "vendas-completo")
+	if !strings.Contains(rules, `approve\\b/": false`) || !strings.Contains(rules, "|run|pending|") {
+		t.Errorf("regras do VS Code:\n%s", rules)
+	}
+}

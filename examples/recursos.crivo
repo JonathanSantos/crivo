@@ -1,0 +1,42 @@
+# recursos.crivo: a mesma base de vendas.crivo com os recursos opcionais.
+# Experimente sem banco: crivo check examples/recursos.crivo --schema-sql testdata/schema.sql
+
+name    vendas-completo
+about   "Base do e-commerce B2B, com portões, consultas prontas e aprovação de escrita"
+env     preprod
+
+connect postgres://svc_app@pg-hml.interno:5432/vendas?sslmode=verify-full
+secret  keychain
+schema  public
+
+limit   500 rows
+timeout 5s
+
+# Portões (todos opcionais)
+expires  2027-06-30
+cost     50000
+rate     30/min
+quota    20000 rows/day
+approval writes
+
+## Pedidos de um cliente, mais novos primeiro
+query pedidos_do_cliente(cliente_id int) "SELECT id, status, total, criado_em FROM pedidos WHERE cliente_id = $1 ORDER BY criado_em DESC"
+
+## Faturamento por mês a partir de uma data
+query faturamento_mensal(desde date) "SELECT date_trunc('month', criado_em) AS mes, sum(total) AS total FROM pedidos WHERE criado_em >= $1 AND status <> 'cancelado' GROUP BY 1 ORDER BY 1"
+
+## Pedidos de venda. status: aberto | pago | enviado | cancelado
+pedidos         read, update(status, observacao) max 20
+
+## Itens de cada pedido; quantidade sempre > 0
+pedido_itens    read, insert, delete max 5
+
+produtos        read mask(preco: bucket 10)
+
+## Clientes PJ. CPF nunca sai do banco; nome vira pseudônimo estável
+clientes        read except(cpf) mask(nome: pseudonym, email: email, telefone: last4)
+
+## Pagamentos confirmados (estornos ficam de fora)
+pagamentos      read mask(pago_em: month) where status <> 'estornado'
+
+audit_*         deny

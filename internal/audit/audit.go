@@ -34,7 +34,12 @@ func Dir() (string, error) {
 }
 
 // Write acrescenta a entrada ao log. Falha de log não interrompe a execução.
-func Write(name string, e Entry) error {
+func Write(name string, e Entry) error { return write(name, e, false) }
+
+// WriteSyslog grava no arquivo e também envia ao syslog (diretiva audit syslog).
+func WriteSyslog(name string, e Entry) error { return write(name, e, true) }
+
+func write(name string, e Entry, syslog bool) error {
 	dir, err := Dir()
 	if err != nil {
 		return err
@@ -42,7 +47,11 @@ func Write(name string, e Entry) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, name+".jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	path := filepath.Join(dir, name+".jsonl")
+	if err := rotate(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -55,6 +64,11 @@ func Write(name string, e Entry) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(data, '\n'))
-	return err
+	if _, err = f.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if syslog {
+		return toSyslog(data)
+	}
+	return nil
 }

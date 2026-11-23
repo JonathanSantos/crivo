@@ -39,6 +39,12 @@ type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
 
+// PendingError é a escrita que ficou esperando aprovação humana (código 6).
+// A mensagem já saiu no stdout; o Report não imprime nada.
+type PendingError struct{ ID string }
+
+func (e *PendingError) Error() string { return "escrita pendente #" + e.ID }
+
 // ConfigError é erro de configuração (código 5).
 type ConfigError struct{ Msg string }
 
@@ -165,14 +171,18 @@ func Report(w io.Writer, p *policy.Policy, err error, asJSON bool) int {
 		denial *sqlguard.Denial
 		perr   *sqlguard.ParseError
 		many   *run.TooManyRows
+		costly *run.TooCostly
 		dberr  *run.DBError
 		miss   *secret.ErrMissing
 		cfg    *ConfigError
 		insec  *run.InsecureError
 	)
+	var pend *PendingError
 	switch {
 	case errors.As(err, &ee):
 		return ee.Code
+	case errors.As(err, &pend):
+		return output.ExitPending
 	case errors.As(err, &insec):
 		output.WriteMessage(w, output.Message{Title: "configuração", Reason: insec.Error(), Hint: "edite a diretiva connect da política e gere o binário de novo", Code: output.ExitConfig}, asJSON)
 		return output.ExitConfig
@@ -193,6 +203,12 @@ func Report(w io.Writer, p *policy.Policy, err error, asJSON bool) int {
 		}
 		output.WriteMessage(w, m, asJSON)
 		return output.ExitParse
+	case errors.As(err, &costly):
+		output.WriteMessage(w, output.Message{
+			Title: "barrado pelo crivo", Reason: costly.Error() + " (nada foi executado)",
+			Accepted: "uma query mais seletiva: WHERE em coluna indexada, menos JOINs ou agregação antes do JOIN", Code: output.ExitDenied,
+		}, asJSON)
+		return output.ExitDenied
 	case errors.As(err, &many):
 		output.WriteMessage(w, output.Message{
 			Title: "barrado pelo crivo", Reason: many.Error() + " (rollback feito)",
@@ -206,7 +222,7 @@ func Report(w io.Writer, p *policy.Policy, err error, asJSON bool) int {
 		output.WriteMessage(w, output.Message{Title: "configuração", Reason: cfg.Msg, Code: output.ExitConfig}, asJSON)
 		return output.ExitConfig
 	case errors.As(err, &dberr):
-		m := output.Message{Title: "erro do banco", Reason: oneLine(dberr.Error()), Code: output.ExitDB}
+		m := output.Message{Title: "erro do banco", Reason: oneLine(run.SafeMessage(dberr)), Code: output.ExitDB}
 		if run.SchemaChanged(err) {
 			m.Hint = "o cache de schema foi renovado; confira as colunas com describe e tente de novo"
 		}

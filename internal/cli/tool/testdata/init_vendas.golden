@@ -22,6 +22,7 @@ timeout 5s
 # audit_log     deny
 
 #   colunas: id, nome, cpf, email, telefone, cidade
+#   sugestão: read except(cpf) mask(nome: pseudonym, email: email, telefone: last4)
 ## Clientes PJ
 # clientes      deny
 
@@ -39,4 +40,5 @@ timeout 5s
 # produtos      deny
 
 #   colunas: id, login, senha_hash
+#   sugestão: read except(senha_hash)
 # usuarios      deny

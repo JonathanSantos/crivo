@@ -66,7 +66,7 @@ func TestGuardSpecCases(t *testing.T) {
 		{CmdQuery, "SELECT id FROM clientes WHERE cpf = '1'", false, `coluna "cpf" não está liberada`},
 		{CmdQuery, "SELECT upper(email) FROM clientes", false, `mascarada (partial)`},
 		{CmdQuery, "SELECT id FROM clientes ORDER BY email", false, `mascarada (partial)`},
-		{CmdQuery, "SELECT * FROM pagamentos p", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado') p"},
+		{CmdQuery, "SELECT * FROM pagamentos p", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM pagamentos WHERE status <> 'estornado' OFFSET 0) p"},
 		{CmdQuery, "SELECT * FROM audit_log", false, "negada pela política"},
 		{CmdQuery, "SELECT * FROM usuarios", false, "não existe para a IA"},
 		{CmdQuery, "SELECT * FROM pg_user", false, "catálogo"},
@@ -112,7 +112,7 @@ func TestGuardSpecCases(t *testing.T) {
 		{CmdQuery, "SELECT current_user", false, "função de sessão"},
 		{CmdQuery, "SELECT 'pg_user'::regclass", false, `tipo "regclass"`},
 		{CmdQuery, "SELECT status, count(*) FROM pedidos GROUP BY status ORDER BY 2 DESC LIMIT 10", true, "LIMIT 11"},
-		{CmdQuery, "SELECT p.status, count(*) FROM pagamentos p GROUP BY 1", true, "'estornado') p GROUP BY 1"},
+		{CmdQuery, "SELECT p.status, count(*) FROM pagamentos p GROUP BY 1", true, "'estornado' OFFSET 0) p GROUP BY 1"},
 		{CmdQuery, "SELECT n FROM generate_series(1, 3) AS g(n)", true, "generate_series"},
 		{CmdQuery, "SELECT date_trunc('day', criado_em::timestamp), count(*) FROM pedidos GROUP BY 1", true, "date_trunc"},
 		{CmdQuery, "SELECT trim(nome), extract(year FROM now()) FROM produtos", true, "LIMIT 501"},
@@ -122,9 +122,9 @@ func TestGuardSpecCases(t *testing.T) {
 		{CmdQuery, "SELECT * FROM pedidos p JOIN pedido_itens i USING (id)", true, "USING (id)"},
 		{CmdQuery, "SELECT id FROM pedidos JOIN pedido_itens USING (id)", true, "LIMIT 501"},
 		{CmdQuery, "SELECT pi.quantidade FROM pedido_itens pi WHERE EXISTS (SELECT * FROM clientes c WHERE c.id = pi.pedido_id)", true, "EXISTS"},
-		{CmdQuery, "SELECT * FROM public.pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM public.pagamentos WHERE status <> 'estornado') pagamentos"},
+		{CmdQuery, "SELECT * FROM public.pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM public.pagamentos WHERE status <> 'estornado' OFFSET 0) pagamentos"},
 		{CmdQuery, "SELECT id FROM pedidos LIMIT 20", true, "LIMIT 21"},
-		{CmdQuery, "SELECT * FROM ONLY pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM ONLY pagamentos WHERE status <> 'estornado') pagamentos"},
+		{CmdQuery, "SELECT * FROM ONLY pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM ONLY pagamentos WHERE status <> 'estornado' OFFSET 0) pagamentos"},
 		{CmdQuery, "SELECT id FROM pedidos LIMIT (SELECT 1)", false, "precisa"},
 		{CmdQuery, "SELECT id FROM pedidos OFFSET 10", true, "OFFSET 10"},
 		{CmdQuery, "SELECT lower(login) FROM usuarios", false, "não existe para a IA"},
@@ -206,7 +206,8 @@ pagamentos read where status <> 'estornado', update(status) where valor > 0, del
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "WHERE (id = 1 OR id = 2) AND g.valor > 0 AND g.status <> 'estornado'"
+	// o WHERE da IA só roda em linha que passou nos filtros (CASE garante a ordem)
+	want := "WHERE CASE WHEN g.valor > 0 AND g.status <> 'estornado' THEN id = 1 OR id = 2 ELSE false END"
 	if !strings.Contains(v.SQL, want) {
 		t.Fatalf("SQL %q não contém %q", v.SQL, want)
 	}
@@ -214,7 +215,7 @@ pagamentos read where status <> 'estornado', update(status) where valor > 0, del
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(v.SQL, "WHERE id = 1 AND valor < 3 AND pagamentos.status <> 'estornado'") {
+	if !strings.Contains(v.SQL, "WHERE CASE WHEN pagamentos.status <> 'estornado' THEN id = 1 AND valor < 3 ELSE false END") {
 		t.Fatalf("SQL inesperado: %s", v.SQL)
 	}
 	if v.MaxRows != policy.DefaultMaxRows {

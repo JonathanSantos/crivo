@@ -111,7 +111,7 @@ func TestMCPExecNeedsAllowFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(text(res), "tsv, json ou table") {
+	if !res.IsError || !strings.Contains(text(res), "tsv, json, table ou markdown") {
 		t.Errorf("format inválido: erro=%v %s", res.IsError, text(res))
 	}
 }

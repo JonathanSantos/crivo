@@ -19,6 +19,8 @@ const (
 	ExitParse  = 3
 	ExitDB     = 4
 	ExitConfig = 5
+	// ExitPending: a escrita ficou pendente de aprovação humana (approval writes).
+	ExitPending = 6
 )
 
 // Limites de saída.
@@ -34,6 +36,8 @@ const (
 	TSV   Format = "tsv"
 	JSON  Format = "json"
 	Table Format = "table"
+	// Markdown é uma tabela em markdown, legível direto no chat.
+	Markdown Format = "markdown"
 )
 
 // Rows é um resultado pronto para imprimir.
@@ -118,10 +122,54 @@ func Write(w io.Writer, f Format, r *Rows) error {
 		return writeJSON(w, r)
 	case Table:
 		writeTable(w, r)
+	case Markdown:
+		writeMarkdown(w, r)
 	default:
 		writeTSV(w, r)
 	}
 	return nil
+}
+
+// escapeMD deixa o valor numa célula só: barra vertical escapada, quebras
+// de linha viram espaço.
+func escapeMD(s string) string {
+	return strings.NewReplacer(`\`, `\\`, "|", `\|`, "\r\n", " ", "\n", " ", "\r", " ").Replace(s)
+}
+
+func writeMarkdown(w io.Writer, r *Rows) {
+	c := &capped{w: w}
+	shown := 0
+	if len(r.Columns) > 0 {
+		hdr := make([]string, len(r.Columns))
+		sep := make([]string, len(r.Columns))
+		for i, h := range r.Columns {
+			hdr[i], sep[i] = escapeMD(h), "---"
+		}
+		c.line("| " + strings.Join(hdr, " | ") + " |")
+		c.line("| " + strings.Join(sep, " | ") + " |")
+		for _, row := range r.Values {
+			cells := make([]string, len(r.Columns))
+			for i := range cells {
+				switch {
+				case i >= len(row):
+				case row[i] == nil:
+					cells[i] = "_NULL_"
+				default:
+					cells[i] = escapeMD(clip(*row[i]))
+				}
+			}
+			if !c.line("| " + strings.Join(cells, " | ") + " |") {
+				break
+			}
+			shown++
+		}
+	}
+	if c.cut {
+		fmt.Fprintf(w, "\n_saída cortada em 256 KB depois de %d de %d linhas; selecione menos colunas ou agregue_\n", shown, len(r.Values))
+	}
+	if r.Footer != "" {
+		fmt.Fprintf(w, "\n_%s_\n", strings.ReplaceAll(r.Footer, "_", `\_`))
+	}
 }
 
 func writeTSV(w io.Writer, r *Rows) {

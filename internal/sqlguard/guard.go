@@ -72,8 +72,12 @@ type OutputMask struct {
 	Index  int
 	Label  string // ex.: c.email
 	Mode   policy.MaskMode
+	Arg    int    // tamanho da faixa em bucket
 	Column string // tabela.coluna de origem
 }
+
+// Mask devolve a máscara da política correspondente (para mask.ApplyMask).
+func (m OutputMask) Mask() policy.Mask { return policy.Mask{Mode: m.Mode, Arg: m.Arg} }
 
 // Verdict é o resultado de uma validação aceita.
 type Verdict struct {

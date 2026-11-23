@@ -83,6 +83,8 @@ func (ds Diags) Sort() {
 var directiveNames = map[string]bool{
 	"name": true, "about": true, "env": true, "connect": true, "secret": true,
 	"schema": true, "limit": true, "timeout": true, "functions": true,
+	"expires": true, "cost": true, "rate": true, "quota": true, "approval": true,
+	"audit": true, "query": true,
 }
 
 // BlockedFunction diz se a função é bloqueada mesmo quando listada em functions.
@@ -312,6 +314,10 @@ func (ps *parser) expectEOL(s *scanner, after string) {
 func (ps *parser) parseLogical(l *logical) {
 	s := &scanner{l: l}
 	w := s.peekWord()
+	if w == "query" {
+		ps.parseQuery(s, l.doc)
+		return
+	}
 	if directiveNames[w] {
 		if l.doc != "" {
 			ps.warnf(l.at(0), "comentário ## antes de diretiva é ignorado (só vale antes de regra)")
@@ -320,6 +326,67 @@ func (ps *parser) parseLogical(l *logical) {
 		return
 	}
 	ps.parseRule(s)
+}
+
+// parseQuery lê: query nome(param tipo, ...) "SELECT ... $1 ..."
+func (ps *parser) parseQuery(s *scanner, doc string) {
+	_, pos := s.word("")
+	name, npos, ok := ps.ident(s, "nome de consulta")
+	if !ok {
+		return
+	}
+	if prev := ps.p.Query(name); prev != nil {
+		ps.errf(npos, "consulta %q repetida (primeira na linha %d)", name, prev.Pos.Line)
+		return
+	}
+	q := &NamedQuery{Pos: pos, Name: name, Doc: doc}
+	if !s.accept('(') {
+		ps.errf(s.pos(), "query precisa da lista de parâmetros, mesmo vazia: query %s() \"SELECT ...\"", name)
+		return
+	}
+	if !s.accept(')') {
+		for {
+			pn, ppos, ok := ps.ident(s, "nome de parâmetro")
+			if !ok {
+				return
+			}
+			t, tpos := s.word("")
+			switch ParamType(t) {
+			case ParamInt, ParamNumeric, ParamText, ParamDate, ParamBool:
+			default:
+				ps.errf(tpos, "tipo de parâmetro desconhecido %q (use int, numeric, text, date ou bool)", t)
+				return
+			}
+			for _, prev := range q.Params {
+				if prev.Name == pn {
+					ps.errf(ppos, "parâmetro %q repetido", pn)
+					return
+				}
+			}
+			q.Params = append(q.Params, Param{Name: pn, Type: ParamType(t)})
+			if s.accept(',') {
+				continue
+			}
+			if s.accept(')') {
+				break
+			}
+			ps.errf(s.pos(), "esperava ',' ou ')' na lista de parâmetros de %s", name)
+			return
+		}
+	}
+	s.skipSpace()
+	q.SQLPos = s.pos()
+	sql, ok := ps.quoted(s)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(sql) == "" {
+		ps.errf(q.SQLPos, "query %s precisa de um SELECT entre aspas", name)
+		return
+	}
+	q.SQL = sql
+	ps.expectEOL(s, "query")
+	ps.p.Queries = append(ps.p.Queries, q)
 }
 
 func (ps *parser) parseDirective(s *scanner) {
@@ -412,6 +479,60 @@ func (ps *parser) parseDirective(s *scanner) {
 			p.Timeout = d
 		}
 		ps.expectEOL(s, "timeout")
+	case "expires":
+		w, wpos := s.word("-")
+		d, err := time.ParseInLocation("2006-01-02", w, time.Local)
+		if err != nil {
+			ps.errf(wpos, "expires precisa de uma data AAAA-MM-DD: %q", w)
+		} else {
+			p.Expires = d.AddDate(0, 0, 1) // vale até o fim do dia
+		}
+		ps.expectEOL(s, "expires")
+	case "cost":
+		n, npos := s.word(".")
+		v, err := strconv.ParseFloat(n, 64)
+		if err != nil || v <= 0 {
+			ps.errf(npos, "cost precisa do custo máximo estimado pelo EXPLAIN, um número positivo: %q", n)
+		} else {
+			p.MaxCost = v
+		}
+		ps.expectEOL(s, "cost")
+	case "rate":
+		w, wpos := s.word("/")
+		n, unit, _ := strings.Cut(w, "/")
+		v, err := strconv.Atoi(n)
+		if err != nil || v <= 0 || unit != "min" {
+			ps.errf(wpos, "rate precisa de execuções por minuto (ex.: rate 30/min): %q", w)
+		} else {
+			p.RatePerMinute = v
+		}
+		ps.expectEOL(s, "rate")
+	case "quota":
+		n, npos := s.word("")
+		v, err := strconv.ParseInt(n, 10, 64)
+		if err != nil || v <= 0 {
+			ps.errf(npos, "quota precisa de um inteiro positivo de linhas (ex.: quota 20000 rows/day): %q", n)
+		} else {
+			p.QuotaRowsDay = v
+		}
+		if u, upos := s.word("/"); u != "rows/day" {
+			ps.errf(upos, `quota precisa terminar com "rows/day" (ex.: quota 20000 rows/day)`)
+		}
+		ps.expectEOL(s, "quota")
+	case "approval":
+		if w, wpos := s.word(""); w != "writes" {
+			ps.errf(wpos, `approval só aceita "writes" (escrita real só depois de <name> approve): %q`, w)
+		} else {
+			p.ApprovalWrites = true
+		}
+		ps.expectEOL(s, "approval")
+	case "audit":
+		if w, wpos := s.word(""); w != "syslog" {
+			ps.errf(wpos, `audit só aceita "syslog" (o log em arquivo é sempre gravado): %q`, w)
+		} else {
+			p.AuditSyslog = true
+		}
+		ps.expectEOL(s, "audit")
 	case "functions":
 		for {
 			f, fpos, ok := ps.ident(s, "nome de função")
@@ -713,13 +834,22 @@ func (ps *parser) parseMasks(s *scanner, a *Action) bool {
 		}
 		m, mpos := s.word("")
 		mode := MaskMode(m)
+		arg := 0
 		switch mode {
-		case MaskPartial, MaskRedact, MaskHash:
+		case MaskPartial, MaskRedact, MaskHash, MaskEmail, MaskLast4, MaskMonth, MaskPseudonym:
+		case MaskBucket:
+			n, npos := s.word("")
+			v, err := strconv.Atoi(n)
+			if err != nil || v <= 0 {
+				ps.errf(npos, "bucket precisa do tamanho da faixa, um inteiro positivo (ex.: %s: bucket 100)", c)
+				return false
+			}
+			arg = v
 		default:
-			ps.errf(mpos, "modo de máscara desconhecido %q (use partial, redact ou hash)", m)
+			ps.errf(mpos, "modo de máscara desconhecido %q (use partial, redact, hash, email, last4, month, bucket N ou pseudonym)", m)
 			return false
 		}
-		a.Masks = append(a.Masks, Mask{Pos: cpos, Column: c, Mode: mode})
+		a.Masks = append(a.Masks, Mask{Pos: cpos, Column: c, Mode: mode, Arg: arg})
 		if s.accept(',') {
 			continue
 		}

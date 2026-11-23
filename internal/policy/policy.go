@@ -27,10 +27,19 @@ func (v Verb) IsWrite() bool { return v == Insert || v == Update || v == Delete 
 type MaskMode string
 
 const (
-	MaskPartial MaskMode = "partial"
-	MaskRedact  MaskMode = "redact"
-	MaskHash    MaskMode = "hash"
+	MaskPartial   MaskMode = "partial"
+	MaskRedact    MaskMode = "redact"
+	MaskHash      MaskMode = "hash"
+	MaskEmail     MaskMode = "email"     // ***@dominio.com: só o domínio
+	MaskLast4     MaskMode = "last4"     // só os 4 últimos caracteres alfanuméricos
+	MaskMonth     MaskMode = "month"     // data reduzida a AAAA-MM
+	MaskBucket    MaskMode = "bucket"    // número na faixa de tamanho Mask.Arg
+	MaskPseudonym MaskMode = "pseudonym" // pseudônimo estável entre execuções (chave local)
 )
+
+// EqualityStable diz se o modo preserva igualdade (o mesmo valor vira sempre
+// o mesmo texto): esses podem ser agrupados, como o hash.
+func (m MaskMode) EqualityStable() bool { return m == MaskHash || m == MaskPseudonym }
 
 // Valores padrão das diretivas.
 const (
@@ -71,6 +80,17 @@ type Policy struct {
 	Timeout   time.Duration
 	Functions []string
 
+	// Portões opcionais (zero: desligado).
+	Expires        time.Time // fim da validade (o binário recusa depois disso)
+	MaxCost        float64   // teto do custo estimado pelo planner (EXPLAIN)
+	RatePerMinute  int       // execuções por minuto
+	QuotaRowsDay   int64     // linhas lidas ou afetadas por dia
+	ApprovalWrites bool      // escrita real só depois de vendas approve
+	AuditSyslog    bool      // também envia a auditoria ao syslog
+
+	// Queries são as consultas nomeadas (diretiva query), na ordem do arquivo.
+	Queries []*NamedQuery
+
 	Rules []*Rule
 
 	directives map[string]Pos
@@ -100,11 +120,59 @@ type Action struct {
 	Masks    []Mask
 }
 
+// ParamType é o tipo de um parâmetro de consulta nomeada.
+type ParamType string
+
+const (
+	ParamInt     ParamType = "int"
+	ParamNumeric ParamType = "numeric"
+	ParamText    ParamType = "text"
+	ParamDate    ParamType = "date"
+	ParamBool    ParamType = "bool"
+)
+
+// Param é um parâmetro de consulta nomeada; o primeiro é $1 no SQL.
+type Param struct {
+	Name string
+	Type ParamType
+}
+
+// NamedQuery é uma consulta pronta da política: um SELECT com $1..$n que
+// a IA chama pelo nome. Ela não ganha privilégio nenhum: a cada chamada os
+// parâmetros viram constantes na árvore e o SQL passa pelo guard inteiro.
+type NamedQuery struct {
+	Pos    Pos
+	Name   string
+	Params []Param
+	SQL    string
+	SQLPos Pos
+	Doc    string
+}
+
+// Query devolve a consulta nomeada, ou nil.
+func (p *Policy) Query(name string) *NamedQuery {
+	for _, q := range p.Queries {
+		if q.Name == name {
+			return q
+		}
+	}
+	return nil
+}
+
 // Mask associa uma coluna a um modo.
 type Mask struct {
 	Pos    Pos
 	Column string
 	Mode   MaskMode
+	Arg    int // tamanho da faixa em bucket
+}
+
+// Text é o modo como escrito na política (ex.: "bucket 100").
+func (m Mask) Text() string {
+	if m.Mode == MaskBucket {
+		return fmt.Sprintf("%s %d", m.Mode, m.Arg)
+	}
+	return string(m.Mode)
 }
 
 // IsPattern diz se a regra usa curinga.
@@ -185,15 +253,35 @@ func (a *Action) AllowedCols(all []string) []string {
 
 // MaskOf devolve o modo de máscara da coluna, ou "".
 func (a *Action) MaskOf(col string) MaskMode {
+	m, _ := a.MaskFor(col)
+	return m.Mode
+}
+
+// MaskFor devolve a máscara completa da coluna (com o argumento do bucket).
+func (a *Action) MaskFor(col string) (Mask, bool) {
 	if a == nil {
-		return ""
+		return Mask{}, false
 	}
 	for _, m := range a.Masks {
 		if m.Column == col {
-			return m.Mode
+			return m, true
 		}
 	}
-	return ""
+	return Mask{}, false
+}
+
+// HasMask diz se alguma regra da política usa o modo.
+func (p *Policy) HasMask(mode MaskMode) bool {
+	for _, r := range p.Rules {
+		for _, a := range r.Actions {
+			for _, m := range a.Masks {
+				if m.Mode == mode {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // MaxRows é o teto de linhas afetadas de uma escrita.
@@ -222,7 +310,7 @@ func (a *Action) String() string {
 	if len(a.Masks) > 0 {
 		var ms []string
 		for _, m := range a.Masks {
-			ms = append(ms, m.Column+": "+string(m.Mode))
+			ms = append(ms, m.Column+": "+m.Text())
 		}
 		s += " mask(" + strings.Join(ms, ", ") + ")"
 	}
