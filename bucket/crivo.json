@@ -1,11 +1,11 @@
 {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "CLI de acesso a Postgres governado por um arquivo de política",
     "homepage": "https://github.com/JonathanSantos/crivo",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/JonathanSantos/crivo/releases/download/v0.2.0/crivo-windows-amd64.exe",
-            "hash": "1719fdf31962e420f294d2ceb5d3d202f48ff2d8b6a40e98670908fb03f62b0e"
+            "url": "https://github.com/JonathanSantos/crivo/releases/download/v0.3.0/crivo-windows-amd64.exe",
+            "hash": "9d9600c37367c6ca550cb3820f1bf7d03bb28731da9136f704cdb8453b65e50d"
         }
     },
     "bin": [
