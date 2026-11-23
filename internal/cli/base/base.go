@@ -60,18 +60,20 @@ type rootCmd struct {
 }
 
 // Main roda o modo base com a política embutida.
-func Main(src []byte, args []string) int {
+func Main(src []byte, args []string) int { return mainWith(src, args, os.Stdout, os.Stderr) }
+
+func mainWith(src []byte, args []string, stdout, stderr io.Writer) int {
 	p, diags := policy.Parse("policy", string(src))
 	if diags.HasErrors() {
-		fmt.Fprintln(os.Stderr, "✗ política embutida inválida:\n"+diags.Error())
+		fmt.Fprintln(stderr, "✗ política embutida inválida:\n"+diags.Error())
 		return output.ExitConfig
 	}
 	root := &rootCmd{}
 	opts := []kong.Option{
 		kong.Name(p.Name),
 		kong.Description(fmt.Sprintf("%s (%s). Toda query passa pelo Crivo.", p.About, p.EnvLabel())),
-		kong.UsageOnError(),
-		kong.Exit(func(int) {}),
+		kong.Writers(stdout, stderr),
+		cli.KongExit(),
 	}
 	if p.HasRead() {
 		opts = append(opts,
@@ -83,34 +85,18 @@ func Main(src []byte, args []string) int {
 	}
 	parser, err := kong.New(root, opts...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return output.ExitBug
 	}
-	kctx, err := parser.Parse(args)
-	if err != nil {
-		if len(args) == 0 || isHelp(args) {
-			return output.ExitOK
-		}
-		fmt.Fprintf(os.Stderr, "%s: %v\n", p.Name, err)
-		return output.ExitConfig
+	kctx, code, done := cli.Parse(parser, args, stderr)
+	if done {
+		return code
 	}
-	if kctx.Command() == "" {
-		return output.ExitOK
-	}
-	e := &env{p: p, stdout: os.Stdout, stderr: os.Stderr, format: output.Format(root.Format), jsonErrors: root.JSONErrors}
-	e.sess = cli.NewSession(p, os.Stderr)
+	e := &env{p: p, stdout: stdout, stderr: stderr, format: output.Format(root.Format), jsonErrors: root.JSONErrors}
+	e.sess = cli.NewSession(p, stderr)
 	defer e.sess.Close()
 	err = kctx.Run(e)
-	return cli.Report(os.Stderr, p, err, root.JSONErrors)
-}
-
-func isHelp(args []string) bool {
-	for _, a := range args {
-		if a == "-h" || a == "--help" || a == "help" {
-			return true
-		}
-	}
-	return false
+	return cli.Report(stderr, p, err, root.JSONErrors)
 }
 
 // ---------- policy, tables, describe ----------
@@ -360,8 +346,23 @@ func (c *explainCmd) Run(e *env) (err error) {
 
 type execCmd struct {
 	sqlArgs
-	DryRun bool `name:"dry-run" help:"Executa, reporta as linhas afetadas e faz rollback."`
+	DryRun switchFlag `name:"dry-run" help:"Executa, reporta as linhas afetadas e faz rollback."`
 }
+
+// switchFlag é uma flag booleana que só liga. O kong aceitaria
+// --dry-run=false (e =0, =no) como escrita real, e essa linha de comando
+// ainda contém "--dry-run", o texto que o auto-approve procura.
+type switchFlag bool
+
+func (f *switchFlag) Decode(ctx *kong.DecodeContext) error {
+	if ctx.Scan.Peek().Type == kong.FlagValueToken {
+		return fmt.Errorf("--%s não aceita valor; para a escrita real, omita a flag", ctx.Value.Name)
+	}
+	*f = true
+	return nil
+}
+
+func (f *switchFlag) IsBool() bool { return true }
 
 func (c *execCmd) Run(e *env) (err error) {
 	start := time.Now()
@@ -371,7 +372,7 @@ func (c *execCmd) Run(e *env) (err error) {
 	}
 	var v *sqlguard.Verdict
 	var n int64
-	defer func() { e.audit("exec", sql, v, start, n, c.DryRun, err) }()
+	defer func() { e.audit("exec", sql, v, start, n, bool(c.DryRun), err) }()
 	g, err := e.guard()
 	if err != nil {
 		return err
@@ -383,7 +384,7 @@ func (c *execCmd) Run(e *env) (err error) {
 	if err != nil {
 		return err
 	}
-	res, err := run.Exec(e.sess.Ctx(), conn, e.p, v.SQL, v.MaxRows, c.DryRun)
+	res, err := run.Exec(e.sess.Ctx(), conn, e.p, v.SQL, v.MaxRows, bool(c.DryRun))
 	if err != nil {
 		var many *run.TooManyRows
 		if errors.As(err, &many) {
@@ -394,7 +395,7 @@ func (c *execCmd) Run(e *env) (err error) {
 		return e.onDBError(err)
 	}
 	n = res.Affected
-	rows := &output.Rows{Footer: output.WriteFooter(res.Affected, c.DryRun)}
+	rows := &output.Rows{Footer: output.WriteFooter(res.Affected, bool(c.DryRun))}
 	if len(res.Columns) > 0 {
 		rows.Columns, rows.Types, rows.Values = res.Columns, res.Types, e.masked(res, v)
 	}

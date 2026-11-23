@@ -124,6 +124,7 @@ func TestGuardSpecCases(t *testing.T) {
 		{CmdQuery, "SELECT pi.quantidade FROM pedido_itens pi WHERE EXISTS (SELECT * FROM clientes c WHERE c.id = pi.pedido_id)", true, "EXISTS"},
 		{CmdQuery, "SELECT * FROM public.pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM public.pagamentos WHERE status <> 'estornado') pagamentos"},
 		{CmdQuery, "SELECT id FROM pedidos LIMIT 20", true, "LIMIT 21"},
+		{CmdQuery, "SELECT * FROM ONLY pagamentos", true, "FROM (SELECT id, pedido_id, valor, status, pago_em FROM ONLY pagamentos WHERE status <> 'estornado') pagamentos"},
 		{CmdQuery, "SELECT id FROM pedidos LIMIT (SELECT 1)", false, "precisa"},
 		{CmdQuery, "SELECT id FROM pedidos OFFSET 10", true, "OFFSET 10"},
 		{CmdQuery, "SELECT lower(login) FROM usuarios", false, "não existe para a IA"},

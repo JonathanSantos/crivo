@@ -380,6 +380,14 @@ func DescribeColumns(r *policy.Rule, t *schema.Table) []ColumnInfo {
 	return out
 }
 
+// dryRunArg é o único formato de SQL que a regra de auto-approve do --dry-run
+// aceita: um argumento entre aspas sem nada que o shell interprete (aspas
+// duplas sem $, crase ou barra invertida; trechos em aspas simples, literais no bash e
+// no PowerShell) ou -f com um caminho simples. Assim um "--dry-run" escrito
+// dentro do SQL, ou escapado (DELETE\ --dry-run, ou com crase no
+// PowerShell), não vira uma escrita real aprovada sem clique.
+const dryRunArg = `(?:"[^"$` + "`" + `\\]*"|(?:'[^']*')+|-f [\w./:-]+)`
+
 // VSCodeSettings devolve o trecho de settings.json de auto-approve.
 func VSCodeSettings(p *policy.Policy, bin string) string {
 	if bin == "" {
@@ -397,7 +405,7 @@ func VSCodeSettings(p *policy.Policy, bin string) string {
 	read = append(read, "refresh")
 	items := []kv{{"/^" + q + " (" + strings.Join(read, "|") + `)\b/`, true}}
 	if p.HasWrite() {
-		items = append(items, kv{"/^" + q + ` exec\b.*--dry-run/`, true}, kv{"/^" + q + ` exec\b/`, false})
+		items = append(items, kv{"/^" + q + " exec " + dryRunArg + ` --dry-run$/`, true}, kv{"/^" + q + ` exec\b/`, false})
 	}
 	var b strings.Builder
 	b.WriteString(`"chat.tools.terminal.autoApprove": {` + "\n")

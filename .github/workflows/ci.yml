@@ -62,15 +62,32 @@ jobs:
           if objdump -p dist/crivo-windows-*.exe | grep -iE "DLL Name: lib"; then
             echo "o exe depende de DLL do MinGW"; exit 1
           fi
+      # A tabela de imports é inferência; aqui o exe roda de fato com o PATH de
+      # uma máquina Windows comum (só System32), sem o mingw64\bin do runner.
+      - name: Executa sem MinGW no PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist\crivo-windows-*.exe).FullName
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & $exe version
+          if ($LASTEXITCODE -ne 0) { throw "crivo version saiu com $LASTEXITCODE" }
       - name: Smoke test do binário
         run: |
           bin=$(ls dist/crivo-*)
           "$bin" version
+          # sem argumentos precisa mostrar a ajuda (antes saía mudo e parecia fechar)
+          out=$("$bin")
+          [[ "$out" == *"Usage: crivo"* ]] || { echo "crivo sem argumentos não mostrou a ajuda"; exit 1; }
           "$bin" check --offline examples/vendas.crivo
+          # fluxo principal sem banco: schema vindo do DDL, casos com o esperado
+          "$bin" test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql > /dev/null
           "$bin" build --offline examples/vendas.crivo -o dist/vendas-smoke
           # sem "| head" direto: com pipefail, o SIGPIPE do head vira exit 141
           out=$(dist/vendas-smoke* policy)
           echo "$out" | head -3
+          out=$(dist/vendas-smoke*)
+          [[ "$out" == *"Usage: vendas"* ]] || { echo "binário gerado sem argumentos não mostrou a ajuda"; exit 1; }
       # O runner macOS é arm64; o clang da Apple cross-compila x86_64 com cgo
       # sem toolchain extra (o Go passa -arch x86_64 sozinho).
       - name: Build macOS Intel

@@ -7,6 +7,8 @@
 
 <p align="center"><a href="#installation">Installation</a> · <a href="#workflow">Workflow</a> · <a href="#the-policy">Policy</a> · <a href="#commands">Commands</a> · <a href="#read-only-user-the-recommended-strategy">Read-only user</a> · <a href="#copilot-integration">Copilot</a> · <a href="#mcp-optional">MCP</a></p>
 
+**Site:** [jonathansantos.github.io/crivo](https://jonathansantos.github.io/crivo/) (in Portuguese), with a demo showing Crivo's real answer to each query.
+
 **Download a prebuilt binary** ([all versions](https://github.com/JonathanSantos/crivo/releases)): [macOS Apple Silicon](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-arm64) · [macOS Intel](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-macos-amd64) · [Linux x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-linux-amd64) · [Windows x86_64](https://github.com/JonathanSantos/crivo/releases/latest/download/crivo-windows-amd64.exe)
 
 *Crivo* is Portuguese for "sieve". **Every query goes through the sieve.** Crivo turns a policy file (`.crivo`) into a local CLI for a pre-production Postgres, plus a skill that teaches GitHub Copilot in VS Code how to use it. Every query the AI sends goes through the real Postgres parser (pg_query) before it reaches the database, and only what the policy allows is executed.
@@ -34,7 +36,7 @@ chmod +x crivo && sudo mv crivo /usr/local/bin/
 crivo version
 ```
 
-On Windows, download `crivo-windows-amd64.exe`, rename it to `crivo.exe` and put it in a folder on your `PATH`. Every release ships a `checksums.txt` with the SHA-256 of all binaries.
+On Windows, download `crivo-windows-amd64.exe`, rename it to `crivo.exe` and put it in a folder on your `PATH`. It is a terminal program: double-clicked, it shows the help and waits for Enter before closing. Every release ships a `checksums.txt` with the SHA-256 of all binaries.
 
 **Building from source:** requires Go 1.26+ and a C compiler (pg_query uses cgo): Xcode CLT on macOS, `gcc` on Linux, MinGW-w64 on Windows.
 
@@ -102,7 +104,11 @@ Precedence: exact name beats pattern; among patterns, the longest literal prefix
 
 ## Commands
 
-**Tool (`crivo`, no embedded policy):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. None of them executes SQL from the AI.
+**Tool (`crivo`, no embedded policy):** `init`, `check`, `test`, `build`, `grants`, `secret set|rm`, `version`. None of them executes SQL from the AI. `check`, `test` and `grants` accept `--schema-sql file.sql` to read the schema from DDL (`testdata/schema.sql` or the output of `pg_dump --schema-only`) without connecting to the database:
+
+```bash
+crivo test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql
+```
 
 **Generated binary (`vendas`, base mode):** `policy`, `tables`, `describe <table>`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table`, `--json-errors`, `-f file.sql`. The mode is decided by the embedded slot; there is no flag or variable that switches modes, so the AI cannot reach `build` through a generated binary.
 
@@ -131,7 +137,7 @@ Crivo lists columns instead of `*` (including inside filter subqueries), so it w
 
 `vendas skill install` writes `<workspace root>/.github/skills/crivo-vendas/SKILL.md` (or `--personal` for `~/.copilot/skills`, `--dir` for another folder). The skill is generated from the embedded policy, is deterministic and never contains host, user or URL. `--with-schema` appends the allowed columns.
 
-`vendas skill vscode` prints the `chat.tools.terminal.autoApprove` rules: reads and `--dry-run` without confirmation, real `exec` always asking for the user's click. Check that your VS Code version honours the rules ([microsoft/vscode#324059](https://github.com/microsoft/vscode/issues/324059)).
+`vendas skill vscode` prints the `chat.tools.terminal.autoApprove` rules: reads and `--dry-run` without confirmation, real `exec` always asking for the user's click. The `--dry-run` rule only approves the exact form `vendas exec "<sql>" --dry-run` (or `-f file.sql --dry-run`), with the flag last and the SQL quoted without `$`, backtick or backslash; a `--dry-run` inside the SQL or escaped in the shell falls through to the rule that asks for the click. The flag takes no value (`--dry-run=false` is rejected). Check that your VS Code version honours the rules ([microsoft/vscode#324059](https://github.com/microsoft/vscode/issues/324059)).
 
 ## MCP (optional)
 
@@ -164,6 +170,8 @@ make fuzz                                                    # go test -fuzz on 
 ```
 
 Integration tests use `CRIVO_TEST_DSN` (the test creates and drops the `crivo_it` schema) or, without it, testcontainers-go when Docker is available; with neither, they are skipped. They exercise the generated binary in both modes, CLI and MCP (the latter as a subprocess, through a real MCP client). Golden files are regenerated with `go test ./internal/policy ./internal/skill -update`.
+
+The site lives in `site/` and is published to GitHub Pages by the `pages.yml` workflow (on every change to `main` and after each release). To preview it: `make build && python3 site/build.py bin/crivo` writes `_site/`.
 
 ```
 cmd/crivo            reads the slot and dispatches: tool mode or base mode

@@ -46,37 +46,27 @@ type rootCmd struct {
 }
 
 // Main roda o modo ferramenta.
-func Main(args []string) int {
+func Main(args []string) int { return mainWith(args, os.Stdout, os.Stderr) }
+
+func mainWith(args []string, stdout, stderr io.Writer) int {
 	root := &rootCmd{}
 	parser, err := kong.New(root,
 		kong.Name("crivo"),
 		kong.Description("Transforma um arquivo de política (.crivo) num CLI local e seguro de acesso a um Postgres de pré-produção."),
-		kong.UsageOnError(),
-		kong.Exit(func(int) {}),
+		kong.Writers(stdout, stderr),
+		cli.KongExit(),
 	)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(stderr, err)
 		return output.ExitBug
 	}
-	kctx, err := parser.Parse(args)
-	if err != nil {
-		for _, a := range args {
-			if a == "-h" || a == "--help" {
-				return output.ExitOK
-			}
-		}
-		if len(args) == 0 {
-			return output.ExitOK
-		}
-		fmt.Fprintf(os.Stderr, "crivo: %v\n", err)
-		return output.ExitConfig
+	kctx, code, done := cli.Parse(parser, args, stderr)
+	if done {
+		return code
 	}
-	if kctx.Command() == "" {
-		return output.ExitOK
-	}
-	e := &env{stdout: os.Stdout, stderr: os.Stderr}
+	e := &env{stdout: stdout, stderr: stderr}
 	err = kctx.Run(e)
-	return cli.Report(os.Stderr, nil, err, false)
+	return cli.Report(stderr, nil, err, false)
 }
 
 func loadPolicy(path string) (*policy.Policy, policy.Diags, error) {
@@ -101,8 +91,25 @@ func printDiags(w io.Writer, ds policy.Diags) {
 // ---------- check ----------
 
 type schemaFlags struct {
-	Offline bool `help:"Não conecta ao banco: usa só o cache de schema, se existir."`
-	Refresh bool `help:"Ignora o cache e lê o catálogo do banco."`
+	Offline   bool   `help:"Não conecta ao banco: usa só o cache de schema, se existir."`
+	Refresh   bool   `help:"Ignora o cache e lê o catálogo do banco."`
+	SchemaSQL string `name:"schema-sql" type:"existingfile" placeholder:"ARQUIVO.sql" help:"Lê o schema de um DDL (CREATE TABLE, COMMENT ON; a saída de pg_dump --schema-only serve) em vez do banco. Não conecta."`
+}
+
+// schemaFromDDL carrega o schema do --schema-sql e mostra os avisos.
+func schemaFromDDL(path string, p *policy.Policy, stderr io.Writer) (*schema.Schema, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	sc, warns, err := schema.FromDDL(string(src), p.Schemas())
+	if err != nil {
+		return nil, &cli.ConfigError{Msg: path + ": " + err.Error()}
+	}
+	for _, w := range warns {
+		fmt.Fprintf(stderr, "aviso: %s\n", w)
+	}
+	return sc, nil
 }
 
 type checkCmd struct {
@@ -134,7 +141,13 @@ func runCheck(path string, f schemaFlags, stderr io.Writer) (*checkResult, error
 		mode = cli.SchemaRefresh
 	}
 	var sc *schema.Schema
-	if f.Offline {
+	switch {
+	case f.SchemaSQL != "":
+		if sc, err = schemaFromDDL(f.SchemaSQL, p, stderr); err != nil {
+			return nil, err
+		}
+		res.note = "schema conferido pelo DDL " + f.SchemaSQL
+	case f.Offline:
 		cached, _, cerr := schema.LoadCache(p.Name, schema.SourceKey(p.Connect, p.Schemas()))
 		if cerr != nil {
 			res.note = "schema não conferido (--offline e sem cache)"
@@ -142,7 +155,7 @@ func runCheck(path string, f schemaFlags, stderr io.Writer) (*checkResult, error
 		}
 		sc = cached
 		res.note = "schema conferido pelo cache"
-	} else {
+	default:
 		sc, err = sess.LoadSchema(mode)
 		if err != nil {
 			res.note = "schema não conferido: " + oneLine(err.Error())
@@ -347,13 +360,18 @@ func (c *testCmd) Run(e *env) error {
 		return &cli.ExitError{Code: output.ExitConfig}
 	}
 	var sc *schema.Schema
-	if c.Offline {
+	switch {
+	case c.SchemaSQL != "":
+		if sc, err = schemaFromDDL(c.SchemaSQL, p, e.stderr); err != nil {
+			return err
+		}
+	case c.Offline:
 		cached, _, cerr := schema.LoadCache(p.Name, schema.SourceKey(p.Connect, p.Schemas()))
 		if cerr != nil {
-			return &cli.ConfigError{Msg: "sem cache de schema para testar offline; rode crivo check " + c.File + " com acesso ao banco"}
+			return &cli.ConfigError{Msg: "sem cache de schema para testar offline; rode crivo check " + c.File + " com acesso ao banco, ou passe --schema-sql com o DDL"}
 		}
 		sc = cached
-	} else {
+	default:
 		sess := cli.NewSession(p, e.stderr)
 		defer sess.Close()
 		mode := cli.SchemaAnyCache

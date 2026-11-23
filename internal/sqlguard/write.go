@@ -336,6 +336,9 @@ func (a *analyzer) wrapperSelect(t *tableRef, rv *pg_query.RangeVar) (*pg_query.
 	if rv.Schemaname != "" {
 		rel = quoteIdent(rv.Schemaname) + "." + rel
 	}
+	if !rv.Inh {
+		rel = "ONLY " + rel // FROM ONLY t: sem isso a reescrita voltava a incluir as filhas
+	}
 	sql := "SELECT " + strings.Join(q, ", ") + " FROM " + rel + " WHERE " + t.read.Where
 	tree, err := pg_query.Parse(sql)
 	if err != nil {

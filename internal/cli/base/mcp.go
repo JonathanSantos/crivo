@@ -119,7 +119,7 @@ func (s *mcpServer) server() *mcp.Server {
 					}), nil, nil
 				}
 				return s.run("exec", a.Format, func(e *env) error {
-					c := &execCmd{DryRun: dry}
+					c := &execCmd{DryRun: switchFlag(dry)}
 					c.SQL = a.SQL
 					return c.Run(e)
 				}), nil, nil

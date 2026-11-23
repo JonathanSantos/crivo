@@ -6,15 +6,30 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+
+	"golang.org/x/term"
 
 	"crivo/internal/cli/base"
 	"crivo/internal/cli/tool"
+	"crivo/internal/console"
 	"crivo/internal/slot"
 )
 
 func main() {
-	if policy, ok := slot.Embedded(); ok {
-		os.Exit(base.Main(policy, os.Args[1:]))
+	args := os.Args[1:]
+	code := dispatch(args)
+	// Duplo clique no Explorer: sem isso a janela fecha antes de dar para ler.
+	interactive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	if console.ShouldPause(args, console.Processes(), interactive) {
+		console.Pause(os.Stdout, os.Stdin, filepath.Base(os.Args[0]))
 	}
-	os.Exit(tool.Main(os.Args[1:]))
+	os.Exit(code)
+}
+
+func dispatch(args []string) int {
+	if policy, ok := slot.Embedded(); ok {
+		return base.Main(policy, args)
+	}
+	return tool.Main(args)
 }

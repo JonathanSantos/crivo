@@ -1,0 +1,71 @@
+name: pages
+
+# Publica o site (site/) no GitHub Pages.
+# - push em main: quando muda o site, a política de exemplo ou o código que
+#   gera a demo (a demo é a saída real do crivo, rodado aqui).
+# - depois do ci de uma tag vX.Y.Z: o release acabou de sair, então a versão
+#   impressa na página é atualizada. Os links de download usam
+#   /releases/latest/download/ e não dependem deste deploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "examples/vendas.crivo"
+      - "testdata/schema.sql"
+      - "docs/img/**"
+      - "icons/**"
+      - "cmd/**"
+      - "internal/**"
+      - ".github/workflows/pages.yml"
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Compila o crivo (a demo roda o binário de verdade)
+        env:
+          CGO_ENABLED: "1"
+        run: go build -trimpath -o bin/crivo ./cmd/crivo
+      - name: Último release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt > release.json || echo '{}' > release.json
+      - name: Gera o site
+        run: python3 site/build.py bin/crivo release.json
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

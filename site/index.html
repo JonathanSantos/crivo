@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crivo · toda query passa pelo crivo</title>
+<meta name="description" content="CLI local de acesso a Postgres de pré-produção governado por um arquivo de política. Toda query da IA passa pelo parser real do Postgres antes de chegar ao banco.">
+<meta property="og:title" content="Crivo">
+<meta property="og:description" content="Toda query passa pelo crivo: política declarativa, parser real do Postgres, skill para o Copilot e servidor MCP.">
+<meta property="og:image" content="img/crivo-512.png">
+<link rel="icon" href="img/crivo.svg" type="image/svg+xml">
+<link rel="icon" href="img/crivo-32.png" sizes="32x32">
+<style>
+:root {
+  --bg: #0D1117;
+  --raise: #151B23;
+  --line: #262E38;
+  --bar: #39434F;
+  --muted: #8A96A6;
+  --sand: #C9C2B2;
+  --text: #F2EFE6;
+  --signal: #3EE08F;
+  --signal-ink: #0D1117;
+  --signal-soft: rgba(62, 224, 143, .12);
+  --deny: #8A96A6;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --wrap: 1120px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #F2EFE6; --raise: #E9E5D9; --line: #D6D0C1; --bar: #B9B2A2;
+    --muted: #5B6573; --sand: #3A424D; --text: #0D1117;
+    --signal: #16A35F; --signal-ink: #F2EFE6; --signal-soft: rgba(22, 163, 95, .12); --deny: #5B6573;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 var(--sans); }
+a { color: inherit; text-decoration-color: var(--bar); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--signal); }
+code, pre, kbd { font-family: var(--mono); font-size: .88em; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+
+/* topo */
+header.top { border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; letter-spacing: -.3px; text-decoration: none; }
+.brand img { width: 28px; height: 28px; border-radius: 7px; }
+nav.links { display: flex; gap: 20px; margin-left: auto; font-size: 15px; color: var(--muted); }
+nav.links a { text-decoration: none; }
+nav.links a:hover { color: var(--text); }
+
+/* abertura */
+.intro { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 56px; padding-top: 72px; padding-bottom: 80px; align-items: start; }
+h1 { font-size: clamp(40px, 5.2vw, 60px); line-height: 1.04; letter-spacing: -1.6px; margin: 0 0 22px; font-weight: 750; }
+h1 .pass { color: var(--signal); }
+.lead { color: var(--sand); font-size: 19px; margin: 0 0 28px; max-width: 34em; }
+.facts { list-style: none; padding: 0; margin: 0 0 34px; display: grid; gap: 6px; font-size: 15px; color: var(--muted); }
+.facts b { color: var(--text); font-weight: 600; }
+
+.get { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: 10px; font-weight: 600; font-size: 16px; text-decoration: none; border: 1px solid transparent; }
+.btn.primary { background: var(--signal); color: var(--signal-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { border-color: var(--bar); }
+.btn.ghost:hover { border-color: var(--text); }
+.ver { flex-basis: 100%; font-size: 14px; color: var(--muted); }
+.ver code { color: var(--text); }
+
+/* o crivo (demo) */
+.sieve { border: 1px solid var(--line); border-radius: 14px; background: var(--raise); overflow: hidden; }
+.sieve-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+.sieve-head b { color: var(--text); font-weight: 600; }
+.stage { position: relative; padding: 18px 18px 0; }
+.queries { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.queries li { max-width: 100%; min-width: 0; }
+.q { max-width: 100%; text-align: left; font: 13px/1.35 var(--mono); color: var(--sand); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q:hover { border-color: var(--bar); color: var(--text); }
+.q[aria-pressed="true"] { border-color: var(--text); color: var(--text); }
+.drop { position: relative; height: 92px; --gap: 0px; }
+.bar { position: absolute; top: 52px; height: 8px; border-radius: 4px; background: var(--muted); transition: width .32s cubic-bezier(.2, .7, .2, 1), left .32s cubic-bezier(.2, .7, .2, 1); }
+.bar.l { left: 0; width: calc(50% - var(--gap) / 2); }
+.bar.r { left: calc(50% + var(--gap) / 2); right: 0; }
+.drop.open .bar.l, .drop.open .bar.r { background: var(--muted); }
+.token { position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; font: 13px/1.35 var(--mono); padding: 6px 13px; border-radius: 999px; white-space: nowrap; max-width: calc(100% - 36px); overflow: hidden; text-overflow: ellipsis; }
+.token.ok { background: var(--signal-soft); border: 1px solid var(--signal); color: var(--text); }
+.token.no { background: var(--bar); color: var(--text); border: 1px solid transparent; }
+.verdict { position: absolute; right: 0; top: 24px; font: 600 13px var(--mono); opacity: 0; transition: opacity .2s; }
+.verdict.show { opacity: 1; }
+.verdict.ok { color: var(--signal); }
+.verdict.no { color: var(--deny); }
+.term { margin: 0; border-top: 1px solid var(--line); padding: 16px 18px 18px; min-height: 196px; font: 13px/1.55 var(--mono); color: var(--sand); white-space: pre-wrap; word-break: break-word; }
+.term .cmd { color: var(--muted); }
+.term .ok { color: var(--signal); }
+.term .no { color: var(--text); font-weight: 600; }
+.term .k { color: var(--muted); }
+
+/* seções */
+section { padding: 72px 0; border-top: 1px solid var(--line); }
+h2 { font-size: 32px; line-height: 1.15; letter-spacing: -.8px; margin: 0 0 14px; }
+.sub { color: var(--sand); margin: 0 0 36px; max-width: 40em; }
+figure { margin: 0; }
+figure img { display: block; width: 100%; height: auto; border-radius: 18px; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: start; }
+.split.wide { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+dl.rules { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 14px 22px; }
+dl.rules dt { font: 14px var(--mono); color: var(--signal); padding-top: 2px; }
+dl.rules dd { margin: 0; color: var(--sand); font-size: 16px; }
+.principles { margin-top: 40px; }
+
+pre.code { margin: 0; background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; overflow-x: auto; font: 13.5px/1.6 var(--mono); color: var(--text); }
+pre.code .c { color: var(--muted); }
+pre.code .kw { color: var(--sand); }
+pre.code .act { color: var(--signal); }
+pre.code .deny { color: var(--deny); text-decoration: line-through; text-decoration-color: var(--bar); }
+
+.tabs { display: flex; gap: 4px; margin-bottom: -1px; }
+.tab { font: 600 14px var(--sans); color: var(--muted); background: none; border: 1px solid transparent; border-bottom: none; border-radius: 10px 10px 0 0; padding: 10px 16px; cursor: pointer; }
+.tab[aria-selected="true"] { color: var(--text); background: var(--raise); border-color: var(--line); }
+.panel { position: relative; }
+.panel pre.code { border-top-left-radius: 0; padding-right: 76px; }
+.copy { position: absolute; top: 12px; right: 12px; font: 600 12px var(--sans); color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+.copy:hover { color: var(--text); border-color: var(--bar); }
+.note { color: var(--muted); font-size: 15px; margin: 14px 0 0; max-width: 46em; }
+.plats { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 18px; font-size: 15px; color: var(--muted); }
+
+footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
+footer .grow { flex: 1; }
+
+@media (max-width: 900px) {
+  .intro { grid-template-columns: 1fr; gap: 40px; padding-top: 48px; padding-bottom: 56px; }
+  .split, .split.wide { grid-template-columns: 1fr; gap: 32px; }
+  nav.links a.opt { display: none; }
+}
+@media (max-width: 560px) {
+  .wrap { padding: 0 16px; }
+  dl.rules { grid-template-columns: 1fr; gap: 2px; }
+  dl.rules dd { margin-bottom: 12px; }
+  section { padding: 56px 0; }
+  h2 { font-size: 26px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="img/crivo.svg" alt="">crivo</a>
+    <nav class="links">
+      <a href="#instalacao">Instalação</a>
+      <a class="opt" href="#politica">Política</a>
+      <a class="opt" href="#como-funciona">Como funciona</a>
+      <a href="https://github.com/__REPO__">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap intro">
+    <div>
+      <h1>Toda query passa <span class="pass">pelo crivo.</span></h1>
+      <p class="lead">O Crivo transforma um arquivo de política num CLI local de acesso a um Postgres de pré-produção. A IA consulta o banco por ele, e cada SQL passa pelo parser real do Postgres antes de chegar lá.</p>
+      <ul class="facts">
+        <li><b>Deny por padrão.</b> O que a política não cita não existe para a IA.</li>
+        <li><b>Fail closed.</b> Coluna ambígua, nó desconhecido ou função fora da lista: recusa.</li>
+        <li><b>Executa o que validou.</b> O banco recebe o SQL reescrito, nunca a string original.</li>
+      </ul>
+      <div class="get">
+        <a class="btn primary" id="dl" href="https://github.com/__REPO__/releases/latest">Baixar o Crivo</a>
+        <a class="btn ghost" href="https://github.com/__REPO__">Código no GitHub</a>
+        <p class="ver" id="ver"><code id="tag">__TAG__</code><span id="date-sep"> · </span><span id="date">__DATE__</span> · <a href="#instalacao">outras plataformas</a></p>
+      </div>
+    </div>
+
+    <div class="sieve" aria-label="Demonstração: escolha uma query e veja a resposta do Crivo">
+      <div class="sieve-head"><span><b>Escolha uma query</b>: a resposta é a saída real do binário</span><span>vendas.crivo</span></div>
+      <div class="stage" id="stage">
+        <ul class="queries" id="queries"></ul>
+        <div class="drop" id="drop" aria-hidden="true"><div class="bar l"></div><div class="bar r"></div><span class="verdict" id="verdict"></span></div>
+      </div>
+      <pre class="term" id="term" aria-live="polite"></pre>
+    </div>
+  </div>
+
+  <section id="politica">
+    <div class="wrap">
+      <h2>Uma política que cabe numa tela</h2>
+      <p class="sub">O arquivo <code>.crivo</code> diz o que a IA pode ler e escrever, tabela por tabela. Este é o exemplo do repositório, o mesmo que respondeu às queries acima.</p>
+      <div class="split wide">
+        <pre class="code" id="policy">__POLICY__</pre>
+        <dl class="rules">
+          <dt>read, insert,<br>update, delete</dt><dd>As quatro ações. DDL, <code>TRUNCATE</code>, <code>COPY</code>, <code>SET</code> e afins nunca passam.</dd>
+          <dt>(a, b) · except(x)</dt><dd>Colunas alcançadas pela ação. Coluna bloqueada não aparece nem em filtro.</dd>
+          <dt>where &lt;expr&gt;</dt><dd>Filtro de linha: na leitura a tabela vira subquery filtrada; na escrita entra no <code>WHERE</code>.</dd>
+          <dt>mask(col: …)</dt><dd><code>partial</code>, <code>redact</code> ou <code>hash</code>, aplicada no resultado.</dd>
+          <dt>max N · limit N</dt><dd>Teto de linhas afetadas por escrita (acima dele, rollback) e de linhas por leitura.</dd>
+          <dt>deny</dt><dd>A tabela some para a IA. <code>pg_catalog</code> e <code>information_schema</code> sempre somem.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section id="como-funciona">
+    <div class="wrap">
+      <h2>O caminho de uma query</h2>
+      <p class="sub">Parse com o pg_query, checagem contra a política, reescrita, re-parse do resultado exigindo o mesmo AST, execução em transação <code>READ ONLY</code> com <code>statement_timeout</code> e, por fim, as máscaras.</p>
+      <figure><img src="img/guard.svg" alt="Parse, política, reescrita, re-checagem, execução e máscara" loading="lazy" width="1200" height="420"></figure>
+      <div class="split principles">
+        <dl class="rules">
+          <dt>erros que ensinam</dt><dd>Toda recusa diz a regra, o motivo e o que seria aceito, para a IA corrigir sozinha.</dd>
+          <dt>códigos de saída</dt><dd><code>0</code> ok, <code>2</code> barrado, <code>3</code> SQL inválido, <code>4</code> erro do banco, <code>5</code> configuração.</dd>
+          <dt>auditoria</dt><dd>Cada chamada vai para <code>~/.crivo/logs/&lt;nome&gt;.jsonl</code>, sem os dados do resultado.</dd>
+        </dl>
+        <dl class="rules">
+          <dt>Copilot</dt><dd><code>vendas skill install</code> grava a skill do agent mode; <code>skill vscode</code> imprime o auto-approve: leitura e <code>--dry-run</code> livres, escrita real sempre com clique.</dd>
+          <dt>MCP</dt><dd><code>vendas mcp</code> serve as mesmas ferramentas por stdio. A escrita real fica desligada até o servidor subir com <code>--allow-exec</code>.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section id="camadas">
+    <div class="wrap split">
+      <div>
+        <h2>Melhor ainda sobre um usuário read-only</h2>
+        <p class="sub">A política funciona sozinha, mas fica mais forte como segunda camada. <code>crivo check</code> avisa quando o usuário de conexão tem privilégio demais, e <code>crivo grants</code> gera o SQL do usuário mínimo a partir da própria política, com <code>GRANT</code> por coluna.</p>
+      </div>
+      <figure><img src="img/layers.svg" alt="Camadas de defesa do Crivo" loading="lazy" width="1200" height="400"></figure>
+    </div>
+  </section>
+
+  <section id="instalacao">
+    <div class="wrap">
+      <h2>Instalação</h2>
+      <p class="sub">Binário pronto para cada plataforma, sem Go nem compilador C. Os links abaixo apontam sempre para o release mais recente.</p>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-os="mac" aria-selected="true">macOS</button>
+        <button class="tab" role="tab" data-os="linux" aria-selected="false">Linux</button>
+        <button class="tab" role="tab" data-os="win" aria-selected="false">Windows</button>
+      </div>
+      <div class="panel" data-panel="mac"><button class="copy">Copiar</button><pre class="code"><span class="c"># Apple Silicon. Em Mac Intel, troque por crivo-macos-amd64.</span>
+curl -fsSL https://github.com/__REPO__/releases/latest/download/crivo-macos-arm64 -o crivo
+chmod +x crivo &amp;&amp; sudo mv crivo /usr/local/bin/
+crivo version</pre></div>
+      <div class="panel" data-panel="linux" hidden><button class="copy">Copiar</button><pre class="code">curl -fsSL https://github.com/__REPO__/releases/latest/download/crivo-linux-amd64 -o crivo
+chmod +x crivo &amp;&amp; sudo mv crivo /usr/local/bin/
+crivo version</pre></div>
+      <div class="panel" data-panel="win" hidden><button class="copy">Copiar</button><pre class="code"><span class="c"># PowerShell: baixa para uma pasta sua e põe no PATH do usuário</span>
+$dir = "$env:LOCALAPPDATA\crivo"; New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest https://github.com/__REPO__/releases/latest/download/crivo-windows-amd64.exe -OutFile "$dir\crivo.exe"
+[Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path','User'));$dir", "User")
+<span class="c"># abra um terminal novo e rode:</span>
+crivo version</pre></div>
+      <p class="note" id="mac-note">No macOS, baixar pelo terminal evita a quarentena do Gatekeeper, que recusa binários sem assinatura de desenvolvedor vindos do navegador. O Crivo é um programa de terminal: no Windows, abrir o <code>.exe</code> com duplo clique só mostra a ajuda.</p>
+      <div class="plats">
+        <a href="https://github.com/__REPO__/releases/latest/download/crivo-macos-arm64">macOS Apple Silicon</a>
+        <a href="https://github.com/__REPO__/releases/latest/download/crivo-macos-amd64">macOS Intel</a>
+        <a href="https://github.com/__REPO__/releases/latest/download/crivo-linux-amd64">Linux x86_64</a>
+        <a href="https://github.com/__REPO__/releases/latest/download/crivo-windows-amd64.exe">Windows x86_64</a>
+        <a href="https://github.com/__REPO__/releases/latest/download/checksums.txt">checksums.txt</a>
+        <a href="https://github.com/__REPO__/releases">todas as versões</a>
+      </div>
+
+      <h2 style="margin-top:64px">Do arquivo ao Copilot</h2>
+      <p class="sub">Sem banco à mão, dá para experimentar a política com um DDL: <code>--schema-sql</code> aceita o <code>testdata/schema.sql</code> do repositório ou a saída de <code>pg_dump --schema-only</code>.</p>
+      <div class="panel"><button class="copy">Copiar</button><pre class="code">crivo init "postgres://svc_app@pg-hml:5432/vendas?sslmode=verify-full"   <span class="c"># vendas.crivo, tudo negado</span>
+$EDITOR vendas.crivo                                                   <span class="c"># libere o que a IA pode fazer</span>
+crivo secret set vendas                                                <span class="c"># senha no keychain do sistema</span>
+crivo check vendas.crivo                                               <span class="c"># sintaxe, semântica e schema real</span>
+crivo test vendas.crivo "SELECT * FROM clientes"                       <span class="c"># decisão e SQL reescrito</span>
+crivo build vendas.crivo                                               <span class="c"># gera ./vendas com a política embutida</span>
+./vendas skill install                                                 <span class="c"># skill do Copilot no workspace</span></pre></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="grow">Crivo protege contra a IA, não contra quem tem acesso à máquina. Nunca use credenciais de produção.</span>
+    <a href="https://github.com/__REPO__#readme">Documentação</a>
+    <a href="https://github.com/__REPO__/blob/main/README.en.md">English</a>
+    <a href="https://github.com/__REPO__/releases">Releases</a>
+  </div>
+</footer>
+
+<script type="application/json" id="demo-data">__DEMO__</script>
+<script>
+(function () {
+  "use strict";
+  var REPO = "__REPO__";
+  var DL = "https://github.com/" + REPO + "/releases/latest/download/";
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- download do sistema de quem visita
+  var ua = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+  var os = /win/i.test(ua) ? "win" : /mac/i.test(ua) ? "mac" : /linux|x11/i.test(ua) ? "linux" : "";
+  var dl = document.getElementById("dl");
+  var label = { mac: ["crivo-macos-arm64", "Baixar para macOS"], linux: ["crivo-linux-amd64", "Baixar para Linux"], win: ["crivo-windows-amd64.exe", "Baixar para Windows"] }[os];
+  if (label) { dl.href = DL + label[0]; dl.textContent = label[1]; }
+
+  // ---- versão: a impressa no deploy, conferida pela API (cobre releases novos)
+  var tagEl = document.getElementById("tag"), dateEl = document.getElementById("date");
+  if (!dateEl.textContent) document.getElementById("date-sep").hidden = true;
+  var MONTHS = "jan fev mar abr mai jun jul ago set out nov dez".split(" ");
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (r) {
+      if (!r || !r.tag_name) return;
+      tagEl.textContent = r.tag_name;
+      var d = new Date(r.published_at);
+      if (!isNaN(d)) { dateEl.textContent = d.getUTCDate() + " " + MONTHS[d.getUTCMonth()] + " " + d.getUTCFullYear(); document.getElementById("date-sep").hidden = false; }
+    })
+    .catch(function () {});
+
+  // ---- política com realce
+  var pol = document.getElementById("policy");
+  pol.innerHTML = pol.innerHTML.split("\n").map(function (l) {
+    if (/^\s*#/.test(l)) return '<span class="c">' + l + "</span>";
+    var m = l.match(/^(\S+)(\s+)(.*)$/);
+    if (!m) return l;
+    if (/^(name|about|env|connect|secret|schema|limit|timeout)$/.test(m[1])) return '<span class="kw">' + m[1] + "</span>" + m[2] + m[3];
+    if (m[3] === "deny") return '<span class="deny">' + m[1] + "</span>" + m[2] + '<span class="c">deny</span>';
+    return m[1] + m[2] + m[3].replace(/\b(read|insert|update|delete)\b/g, '<span class="act">$1</span>');
+  }).join("\n");
+
+  // ---- o crivo: a placa só abre, na largura exata, para a query aceita
+  var cases = JSON.parse(document.getElementById("demo-data").textContent);
+  var list = document.getElementById("queries"), term = document.getElementById("term");
+  var stage = document.getElementById("stage"), drop = document.getElementById("drop");
+  var verdict = document.getElementById("verdict");
+  var token = null, anim = null;
+
+  function esc(s) { return s.replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  function render(c) {
+    var out = esc(c.out).split("\n").map(function (l) {
+      if (/^✓/.test(l)) return '<span class="ok">' + l + "</span>";
+      if (/^✗/.test(l)) return '<span class="no">' + l + "</span>";
+      return l.replace(/^(\s+)(\S+)/, '$1<span class="k">$2</span>');
+    }).join("\n");
+    term.innerHTML = '<span class="cmd">$ crivo test vendas.crivo "' + esc(c.sql) + '"</span>\n' + out +
+      '\n<span class="' + (c.exit === 0 ? "ok" : "k") + '">exit ' + c.exit + "</span>";
+  }
+
+  function settle(c) {
+    var ok = c.exit === 0;
+    verdict.className = "verdict show " + (ok ? "ok" : "no");
+    verdict.textContent = ok ? "exit 0 · passa" : "exit " + c.exit + " · barrada";
+    render(c);
+  }
+
+  function fall(btn, c) {
+    if (anim) anim.cancel();
+    if (token) token.remove();
+    verdict.className = "verdict";
+    var ok = c.exit === 0;
+    if (reduce) { drop.style.setProperty("--gap", "0px"); settle(c); return; }
+    var s = stage.getBoundingClientRect(), b = btn.getBoundingClientRect(), d = drop.getBoundingClientRect();
+    token = document.createElement("div");
+    token.className = "token " + (ok ? "ok" : "no");
+    token.textContent = c.sql;
+    stage.appendChild(token);
+    var w = token.getBoundingClientRect().width, h = token.getBoundingClientRect().height;
+    var x0 = b.left - s.left, y0 = b.top - s.top;
+    var cx = (d.left - s.left) + d.width / 2 - w / 2;
+    var plateY = (d.top - s.top) + 52;
+    var rest = plateY - h - 2, below = plateY + 34;
+    drop.style.setProperty("--gap", ok ? (w + 16) + "px" : "0px");
+    var frames = ok
+      ? [{ transform: "translate(" + x0 + "px," + y0 + "px)", opacity: 1 },
+         { transform: "translate(" + cx + "px," + rest + "px)", opacity: 1, offset: .55 },
+         { transform: "translate(" + cx + "px," + below + "px)", opacity: 0 }]
+      : [{ transform: "translate(" + x0 + "px," + y0 + "px)", opacity: 1 },
+         { transform: "translate(" + cx + "px," + rest + "px)", opacity: 1, offset: .6 },
+         { transform: "translate(" + cx + "px," + rest + "px)", opacity: .4 }];
+    anim = token.animate(frames, { duration: ok ? 1000 : 820, easing: "cubic-bezier(.35,.1,.25,1)", fill: "forwards" });
+    anim.onfinish = function () { settle(c); if (ok) { token.remove(); token = null; setTimeout(function () { drop.style.setProperty("--gap", "0px"); }, 250); } };
+  }
+
+  cases.forEach(function (c, i) {
+    var li = document.createElement("li");
+    var btn = document.createElement("button");
+    btn.className = "q";
+    btn.type = "button";
+    btn.textContent = c.sql;
+    btn.title = c.sql;
+    btn.setAttribute("aria-pressed", String(i === 0));
+    btn.addEventListener("click", function () {
+      list.querySelectorAll(".q").forEach(function (o) { o.setAttribute("aria-pressed", "false"); });
+      btn.setAttribute("aria-pressed", "true");
+      fall(btn, c);
+    });
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+  if (cases.length) settle(cases[0]);
+
+  // ---- abas de instalação
+  var tabs = document.querySelectorAll(".tab");
+  function pick(name) {
+    tabs.forEach(function (t) { t.setAttribute("aria-selected", String(t.dataset.os === name)); });
+    document.querySelectorAll("[data-panel]").forEach(function (p) { p.hidden = p.dataset.panel !== name; });
+  }
+  tabs.forEach(function (t) { t.addEventListener("click", function () { pick(t.dataset.os); }); });
+  if (os) pick(os);
+
+  // ---- copiar
+  document.querySelectorAll(".copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var text = b.parentNode.querySelector("pre").innerText;
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () {
+        b.textContent = "Copiado"; setTimeout(function () { b.textContent = "Copiar"; }, 1400);
+      }).catch(function () {});
+    });
+  });
+})();
+</script>
+</body>
+</html>

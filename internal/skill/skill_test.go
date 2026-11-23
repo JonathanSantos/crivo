@@ -124,11 +124,44 @@ func TestVSCodeSettings(t *testing.T) {
 	got := VSCodeSettings(vendas(t), "vendas")
 	want := `"chat.tools.terminal.autoApprove": {
   "/^vendas (tables|describe|policy|query|explain|refresh)\\b/": true,
-  "/^vendas exec\\b.*--dry-run/": true,
+  "/^vendas exec (?:\"[^\"$` + "`" + `\\\\]*\"|(?:'[^']*')+|-f [\\w./:-]+) --dry-run$/": true,
   "/^vendas exec\\b/": false
 }
 `
 	if got != want {
 		t.Fatalf("obtido:\n%s\nesperado:\n%s", got, want)
+	}
+}
+
+// A regra que libera o --dry-run sem clique não pode casar com uma escrita
+// real: "--dry-run" dentro do SQL, escapado no shell ou com valor.
+func TestVSCodeDryRunRule(t *testing.T) {
+	re := regexp.MustCompile(`^vendas exec ` + dryRunArg + ` --dry-run$`)
+	approve := []string{
+		`vendas exec "DELETE FROM pedido_itens WHERE pedido_id = 1" --dry-run`,
+		`vendas exec 'UPDATE pedidos SET status = ''pago'' WHERE id = 1' --dry-run`,
+		"vendas exec \"UPDATE pedidos\n SET status = 'pago'\n WHERE id = 1\" --dry-run",
+		`vendas exec -f escrita.sql --dry-run`,
+	}
+	click := []string{
+		`vendas exec "UPDATE pedidos SET observacao = '--dry-run' WHERE id = 1"`,
+		`vendas exec "DELETE FROM pedido_itens WHERE pedido_id = 1 -- --dry-run"`,
+		`vendas exec DELETE\ FROM\ pedido_itens\ WHERE\ id=1\ --dry-run`,
+		"vendas exec DELETE` FROM` pedido_itens` WHERE` id=1` --dry-run",
+		`vendas exec "DELETE FROM pedido_itens WHERE id=1" --dry-run=false`,
+		`vendas exec "DELETE FROM pedido_itens WHERE id=1 \" --dry-run`,
+		`vendas exec "$(cat x.sql)" --dry-run`,
+		`vendas exec -f a\ --dry-run`,
+		`vendas exec "DELETE FROM pedido_itens WHERE id=1"`,
+	}
+	for _, c := range approve {
+		if !re.MatchString(c) {
+			t.Errorf("deveria aprovar sem clique: %s", c)
+		}
+	}
+	for _, c := range click {
+		if re.MatchString(c) {
+			t.Errorf("aprovaria escrita real sem clique: %s", c)
+		}
 	}
 }

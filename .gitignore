@@ -5,3 +5,6 @@
 /crivo
 /vendas
 internal/sqlguard/testdata/fuzz/
+
+# site gerado por site/build.py
+/_site/
