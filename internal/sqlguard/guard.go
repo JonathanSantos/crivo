@@ -9,6 +9,7 @@ package sqlguard
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
@@ -253,6 +254,11 @@ func FilterColumns(expr string) []string {
 	walk = func(m protoreflect.Message) {
 		switch v := m.Interface().(type) {
 		case *pg_query.SubLink:
+			// o lado de fora de "col IN (SELECT ...)" é coluna da tabela; o
+			// SELECT interno tem as tabelas dele
+			if v.Testexpr != nil {
+				walk(v.Testexpr.ProtoReflect())
+			}
 			return
 		case *pg_query.ColumnRef:
 			if f, ok := refFields(v); ok && len(f) >= 1 && f[len(f)-1] != "*" {
@@ -278,5 +284,8 @@ func FilterColumns(expr string) []string {
 		})
 	}
 	walk(sel.WhereClause.ProtoReflect())
+	// O Range do protobuf não tem ordem definida (muda entre execuções); a
+	// lista ordenada deixa o check e o grants determinísticos.
+	sort.Strings(out)
 	return out
 }

@@ -606,12 +606,15 @@ func TestFilterColumns(t *testing.T) {
 		want []string
 	}{
 		{"status <> 'estornado'", []string{"status"}},
-		{"valor > 0 AND status = 'x' AND valor < 10", []string{"valor", "status"}},
+		// ordem alfabética: o percurso do protobuf não tem ordem definida
+		{"valor > 0 AND status = 'x' AND valor < 10", []string{"status", "valor"}},
 		{"g.valor > 0", []string{"valor"}},
-		{"lower(nome) = 'x' OR coalesce(cidade, '') = ''", []string{"nome", "cidade"}},
+		{"lower(nome) = 'x' OR coalesce(cidade, '') = ''", []string{"cidade", "nome"}},
 		{"CASE WHEN ativo THEN preco ELSE 0 END > 1", []string{"ativo", "preco"}},
 		// subquery fica de fora: suas colunas são de outra tabela
 		{"EXISTS (SELECT 1 FROM pedidos WHERE cliente_id = 1)", nil},
+		// o lado de fora do IN é coluna da tabela; o SELECT interno não
+		{"pedido_id IN (SELECT id FROM pedidos WHERE status = 'pago')", []string{"pedido_id"}},
 		{"t.* IS NOT NULL", nil},
 		{"true", nil},
 		// expressões inválidas não derrubam: devolvem nil
