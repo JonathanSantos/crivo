@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,15 +72,12 @@ func (e *InsecureError) Error() string {
 // Connect abre uma conexão identificada como crivo:<name>. Recusa URL sem
 // TLS para host remoto.
 func Connect(ctx context.Context, connect, name, password string) (*pgx.Conn, error) {
-	if u, err := url.Parse(connect); err == nil {
-		mode := u.Query().Get("sslmode")
-		if !policy.IsLocalHost(u.Hostname()) && !policy.TLSEncrypted(mode) {
-			return nil, &InsecureError{Host: u.Hostname(), Mode: mode}
-		}
-	}
 	cfg, err := pgx.ParseConfig(connect)
 	if err != nil {
 		return nil, fmt.Errorf("URL de conexão inválida: %w", err)
+	}
+	if err := checkTLS(cfg, connect); err != nil {
+		return nil, err
 	}
 	if password != "" {
 		cfg.Password = password
@@ -92,6 +90,30 @@ func Connect(ctx context.Context, connect, name, password string) (*pgx.Conn, er
 		return nil, &DBError{fmt.Errorf("conexão: %w", err)}
 	}
 	return conn, nil
+}
+
+// checkTLS confere o destino que o driver vai usar de fato, e não uma
+// releitura da URL: parâmetros como ?host= trocam o host, e o sslmode=prefer
+// (padrão sem sslmode) cria um destino alternativo sem TLS. Todo destino
+// remoto, inclusive os alternativos, precisa de TLS.
+func checkTLS(cfg *pgx.ConnConfig, connect string) error {
+	mode := ""
+	if u, err := url.Parse(connect); err == nil {
+		mode = u.Query().Get("sslmode")
+	}
+	targets := []*pgconn.FallbackConfig{{Host: cfg.Host, Port: cfg.Port, TLSConfig: cfg.TLSConfig}}
+	targets = append(targets, cfg.Fallbacks...)
+	for _, t := range targets {
+		if t.TLSConfig == nil && !localTarget(t.Host) {
+			return &InsecureError{Host: t.Host, Mode: mode}
+		}
+	}
+	return nil
+}
+
+// localTarget é host da própria máquina ou socket unix (caminho absoluto).
+func localTarget(host string) bool {
+	return policy.IsLocalHost(host) || strings.HasPrefix(host, "/")
 }
 
 // Context devolve um contexto com folga sobre o statement_timeout.

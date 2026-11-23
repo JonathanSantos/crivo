@@ -31,6 +31,7 @@ import (
 )
 
 type env struct {
+	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
 }
@@ -46,9 +47,9 @@ type rootCmd struct {
 }
 
 // Main roda o modo ferramenta.
-func Main(args []string) int { return mainWith(args, os.Stdout, os.Stderr) }
+func Main(args []string) int { return mainWith(args, os.Stdin, os.Stdout, os.Stderr) }
 
-func mainWith(args []string, stdout, stderr io.Writer) int {
+func mainWith(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := &rootCmd{}
 	parser, err := kong.New(root,
 		kong.Name("crivo"),
@@ -64,7 +65,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	if done {
 		return code
 	}
-	e := &env{stdout: stdout, stderr: stderr}
+	e := &env{stdin: stdin, stdout: stdout, stderr: stderr}
 	err = kctx.Run(e)
 	return cli.Report(stderr, nil, err, false)
 }
@@ -575,7 +576,7 @@ func (c *buildCmd) Run(e *env) error {
 		out += ".exe"
 	}
 	absOut, _ := filepath.Abs(out)
-	if absOut == self {
+	if sameFile(absOut, self) {
 		return &cli.ConfigError{Msg: "a saída não pode sobrescrever o próprio crivo"}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(absOut), ".crivo-build-*")
@@ -613,6 +614,21 @@ func (c *buildCmd) Run(e *env) error {
 	return nil
 }
 
+// sameFile diz se os dois caminhos são o mesmo arquivo. Comparar o texto não
+// basta: o caminho do executável vem com links resolvidos (no macOS /var é
+// /private/var) e o disco pode não distinguir maiúsculas.
+func sameFile(a, b string) bool {
+	if a == b {
+		return true
+	}
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
+}
+
 // ---------- secret ----------
 
 type secretCmd struct {
@@ -633,7 +649,7 @@ func (c *secretSetCmd) Run(e *env) error {
 	}
 	var pw string
 	if c.Stdin {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := bufio.NewReader(e.stdin).ReadString('\n')
 		if err != nil && line == "" {
 			return &cli.ConfigError{Msg: "stdin vazio"}
 		}
@@ -696,6 +712,12 @@ func (c *initCmd) Run(e *env) error {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return &cli.ConfigError{Msg: "URL inválida: use postgres://usuario@host:5432/banco"}
 	}
+	db := strings.Trim(u.Path, "/")
+	if db == "" {
+		// sem banco o pg conectaria no banco com o nome do usuário, e o arquivo
+		// gerado teria um connect que o check recusa
+		return &cli.ConfigError{Msg: "URL sem o nome do banco: use postgres://usuario@host:5432/banco"}
+	}
 	var pw string
 	fromArg := false
 	if u.User != nil {
@@ -735,7 +757,6 @@ func (c *initCmd) Run(e *env) error {
 	if pw == "" && term.IsTerminal(int(os.Stdin.Fd())) {
 		pw, _ = secret.Prompt("senha (enter para nenhuma): ")
 	}
-	db := strings.Trim(u.Path, "/")
 	name := sanitizeName(db)
 	ctx, cancel := run.Context(&policy.Policy{Timeout: policy.DefaultTimeout})
 	defer cancel()
@@ -768,7 +789,10 @@ func sanitizeName(db string) string {
 	s := strings.ToLower(db)
 	s = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
-	if s == "" || s[0] < 'a' || s[0] > 'z' {
+	switch {
+	case s == "":
+		s = "base"
+	case s[0] < 'a' || s[0] > 'z':
 		s = "base-" + s
 	}
 	if len(s) > 58 {

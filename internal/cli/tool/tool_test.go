@@ -8,18 +8,25 @@ import (
 	"testing"
 
 	"crivo/internal/output"
+	"crivo/internal/testenv"
 )
 
 func runTool(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	return runToolIn(t, "", args...)
+}
+
+func runToolIn(t *testing.T, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
 	var out, errOut bytes.Buffer
-	code = mainWith(args, &out, &errOut)
+	code = mainWith(args, strings.NewReader(stdin), &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 
 // Sem argumentos o crivo saía mudo com código 0: no Windows parecia que o
 // programa "só fechava".
 func TestNoArgsPrintsUsage(t *testing.T) {
+	testenv.Isolate(t)
 	for _, args := range [][]string{nil, {"help"}, {"--help"}} {
 		code, out, _ := runTool(t, args...)
 		if code != output.ExitOK {
@@ -33,6 +40,7 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 
 // --help num subcomando imprimia a ajuda e seguia rodando o comando.
 func TestSubcommandHelpDoesNotRun(t *testing.T) {
+	testenv.Isolate(t)
 	dst := filepath.Join(t.TempDir(), "vendas")
 	code, out, errOut := runTool(t, "build", "--offline", "../../../examples/vendas.crivo", "-o", dst, "--help")
 	if code != output.ExitOK {
@@ -49,6 +57,7 @@ func TestSubcommandHelpDoesNotRun(t *testing.T) {
 }
 
 func TestUnknownCommandPointsToHelp(t *testing.T) {
+	testenv.Isolate(t)
 	code, _, errOut := runTool(t, "bogus")
 	if code != output.ExitConfig {
 		t.Errorf("código %d, esperava %d", code, output.ExitConfig)
@@ -60,6 +69,7 @@ func TestUnknownCommandPointsToHelp(t *testing.T) {
 
 // Fluxo principal sem banco: check e test com o schema vindo de um DDL.
 func TestSchemaSQLWithoutDatabase(t *testing.T) {
+	testenv.Isolate(t)
 	const pol, ddl = "../../../examples/vendas.crivo", "../../../testdata/schema.sql"
 	code, out, errOut := runTool(t, "check", pol, "--schema-sql", ddl)
 	if code != output.ExitOK || !strings.Contains(out, "schema conferido pelo DDL") {

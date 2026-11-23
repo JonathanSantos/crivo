@@ -1,0 +1,22 @@
+-- Usuário de privilégio mínimo para a política leitura (gerado por crivo grants; revise antes de rodar).
+-- Com ele, a política vira a segunda camada: o que escapar do Crivo o banco recusa.
+-- Depois troque o usuário em connect e grave a senha: crivo secret set leitura
+
+CREATE ROLE "Leitor IA" LOGIN PASSWORD 'troque-esta-senha';
+GRANT CONNECT ON DATABASE "Vendas-HML" TO "Leitor IA";
+GRANT USAGE ON SCHEMA public TO "Leitor IA";
+
+-- pedidos (policy readonly.crivo:9)
+GRANT SELECT ON public.pedidos TO "Leitor IA";
+
+-- pagamentos (policy readonly.crivo:10)
+GRANT SELECT ON public.pagamentos TO "Leitor IA";
+
+-- A política não tem escrita: o usuário fica só leitura também no banco.
+ALTER ROLE "Leitor IA" SET default_transaction_read_only = on;
+
+-- Filtros de linha (where) também podem virar Row Level Security (opcional; afeta o papel Leitor IA):
+-- CREATE POLICY "Leitor IA_read" ON public.pagamentos FOR SELECT TO "Leitor IA" USING (status <> 'estornado');
+-- e ALTER TABLE ... ENABLE ROW LEVEL SECURITY nas tabelas acima.
+
+ALTER ROLE "Leitor IA" SET statement_timeout = '3000ms';

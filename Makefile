@@ -14,10 +14,11 @@ build:
 test:
 	go test ./...
 
-# Postgres real: CRIVO_TEST_DSN=postgres://usuario:senha@host:5432/banco make test-integration
-# (sem a variável, usa testcontainers-go se houver Docker)
+# Postgres real, nesta ordem: CRIVO_TEST_DSN=postgres://usuario:senha@host:5432/banco;
+# senão um Postgres descartável via initdb, se houver no PATH (pasta temporária,
+# só 127.0.0.1, parado no fim); senão testcontainers-go, se houver Docker.
 test-integration:
-	go test -v ./internal/integration/
+	CRIVO_TEST_LOCALPG=$$(command -v initdb >/dev/null && echo 1) go test -count=1 -v ./internal/integration/
 
 fuzz:
 	go test -run XXX -fuzz FuzzGuard -fuzztime 60s ./internal/sqlguard/

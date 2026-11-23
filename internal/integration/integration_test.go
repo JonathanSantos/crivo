@@ -35,6 +35,7 @@ import (
 const testSchemaName = "crivo_it"
 
 type fixture struct {
+	admin    string // URL de admin do banco deste teste (com senha)
 	connect  string // URL sem senha
 	password string
 	policy   *policy.Policy
@@ -128,7 +129,7 @@ audit_*         deny
 	if diags.HasErrors() {
 		t.Fatal(diags.Error())
 	}
-	f := &fixture{connect: u.String(), password: pw, policy: p}
+	f := &fixture{admin: dsn, connect: u.String(), password: pw, policy: p}
 	c := f.conn(t)
 	sc, err := schema.Fetch(ctx, c, p.Schemas())
 	if err != nil {

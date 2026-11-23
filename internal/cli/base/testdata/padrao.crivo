@@ -1,0 +1,9 @@
+# Política com padrão de nome e tabela ausente no banco, para tables e describe.
+name    padrao
+about   "Teste de padrões"
+env     dev
+connect postgres://svc@localhost:5432/vendas
+secret  keychain
+
+pedido*         read
+fantasma        read

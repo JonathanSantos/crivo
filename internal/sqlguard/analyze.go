@@ -95,6 +95,10 @@ type cteEnv struct {
 	parent *cteEnv
 	name   string
 	cols   []column
+	// forward marca uma CTE de WITH RECURSIVE ainda não definida neste ponto.
+	// O Postgres resolve o nome para ela; o guard não sabe as colunas, então
+	// recusa em vez de deixar o nome cair numa tabela real de mesmo nome.
+	forward bool
 }
 
 func (c *cteEnv) lookup(name string) *cteEnv {
@@ -733,10 +737,25 @@ func (a *analyzer) withClause(wc *pg_query.WithClause, outer *scope, ctes *cteEn
 	if wc == nil {
 		return ctes
 	}
+	var names []string
 	for _, n := range wc.Ctes {
+		if cte := n.GetCommonTableExpr(); cte != nil {
+			names = append(names, cte.Ctename)
+		}
+	}
+	for i, n := range wc.Ctes {
 		cte := n.GetCommonTableExpr()
 		if cte == nil {
 			a.denyf(nil, "", "WITH malformado")
+		}
+		// Em WITH RECURSIVE cada CTE enxerga as definidas depois dela e, fora
+		// do termo recursivo, o próprio nome. Esses nomes ficam marcados.
+		env := ctes
+		if wc.Recursive {
+			for _, later := range names[i+1:] {
+				env = &cteEnv{parent: env, name: later, forward: true}
+			}
+			env = &cteEnv{parent: env, name: cte.Ctename, forward: true}
 		}
 		sel := cte.Ctequery.GetSelectStmt()
 		if sel == nil {
@@ -746,8 +765,8 @@ func (a *analyzer) withClause(wc *pg_query.WithClause, outer *scope, ctes *cteEn
 		var cols []column
 		if wc.Recursive && sel.Op != pg_query.SetOperation_SETOP_NONE {
 			// o termo não recursivo define as colunas; o recursivo enxerga a CTE
-			left := a.selectStmt(sel.Larg, outer, ctes, selOpts{targetCtx: useBare})
-			self := &cteEnv{parent: ctes, name: cte.Ctename, cols: renameCols(left, aliases)}
+			left := a.selectStmt(sel.Larg, outer, env, selOpts{targetCtx: useBare})
+			self := &cteEnv{parent: env, name: cte.Ctename, cols: renameCols(left, aliases)}
 			right := a.selectStmt(sel.Rarg, outer, self, selOpts{targetCtx: useBare})
 			cols = a.combineSetOp(sel, left, right)
 			a.limitOffset(sel)
@@ -755,7 +774,7 @@ func (a *analyzer) withClause(wc *pg_query.WithClause, outer *scope, ctes *cteEn
 				a.denyf(nil, "", "ORDER BY em CTE recursiva não é aceito")
 			}
 		} else {
-			cols = a.selectStmt(sel, outer, ctes, selOpts{targetCtx: useBare})
+			cols = a.selectStmt(sel, outer, env, selOpts{targetCtx: useBare})
 		}
 		ctes = &cteEnv{parent: ctes, name: cte.Ctename, cols: renameCols(cols, aliases)}
 	}
@@ -1088,6 +1107,9 @@ func (a *analyzer) fromItem(n *pg_query.Node, s *scope, ctes *cteEnv) []*entry {
 		rv := v.RangeVar
 		if rv.Schemaname == "" {
 			if cte := ctes.lookup(rv.Relname); cte != nil {
+				if cte.forward {
+					a.denyf(nil, "em WITH RECURSIVE, defina cada CTE antes de citá-la", "a CTE %q é citada antes de ser definida (ou fora do termo recursivo)", rv.Relname)
+				}
 				a.visited[rv] = true
 				name := rv.Relname
 				if rv.Alias != nil {
@@ -1137,7 +1159,7 @@ func (a *analyzer) fromItem(n *pg_query.Node, s *scope, ctes *cteEnv) []*entry {
 			a.denyf(nil, "dê um alias à subquery: (SELECT ...) AS s", "subquery sem alias no FROM")
 		}
 		if a.recheck {
-			if t := a.matchWrapper(sel); t != nil {
+			if t := a.matchWrapper(sel, ctes); t != nil {
 				if len(rs.Alias.Colnames) > 0 {
 					a.denyf(t.rule, "", "filtro reescrito com alias de colunas")
 				}

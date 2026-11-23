@@ -1,0 +1,13 @@
+# Política com problemas de propósito: cada regra quebra uma checagem contra o schema.
+name    checks
+about   "Teste das checagens contra o schema"
+env     dev
+connect postgres://svc@localhost:5432/vendas
+secret  keychain
+
+fantasma        read
+pedidos         read, update(status, nao_existe)
+clientes        read mask(sumida: hash)
+pagamentos      read where coluna_x > 0
+produtos        read except(id, nome, preco, ativo)
+tmp_*           read

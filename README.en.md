@@ -164,12 +164,14 @@ Local files: schema cache in `~/.cache/crivo/<name>/schema.json` (10 min TTL, ho
 ## Development
 
 ```bash
-make test                                                    # unit, golden files, slot with a real binary
-CRIVO_TEST_DSN=postgres://postgres:password@localhost:5432/postgres make test-integration
+make test                                                    # unit, golden files and end to end without a database
+make test-integration                                        # real Postgres (throwaway via initdb, if available)
 make fuzz                                                    # go test -fuzz on sqlguard.Guard
 ```
 
-Integration tests use `CRIVO_TEST_DSN` (the test creates and drops the `crivo_it` schema) or, without it, testcontainers-go when Docker is available; with neither, they are skipped. They exercise the generated binary in both modes, CLI and MCP (the latter as a subprocess, through a real MCP client). Golden files are regenerated with `go test ./internal/policy ./internal/skill -update`.
+`make test` needs no database or network and never touches the real home, cache or keychain: tests use `internal/testenv`, which points everything at temporary folders and an in-memory keychain. It includes an end-to-end test (`cmd/crivo`) that builds the binary and walks the flow with the schema from DDL (`go test -short` skips it).
+
+Integration tests use, in this order, `CRIVO_TEST_DSN` (the test creates and drops the `crivo_it` schema and temporary `crivo_it_*` roles), a throwaway Postgres created with `initdb` when it is on `PATH` (`make test-integration` turns this on with `CRIVO_TEST_LOCALPG=1`), or testcontainers-go when Docker is available; with none, they are skipped. They exercise the generated binary in both modes, CLI and MCP, `init` and `check` against the database, recovery when the schema changes, and they apply the `crivo grants` SQL to confirm the database itself then refuses what the policy denies. Golden files are regenerated with `go test ./internal/policy ./internal/skill ./internal/cli/tool -update`.
 
 The site lives in `site/` and is published to GitHub Pages by the `pages.yml` workflow (on every change to `main` and after each release). To preview it: `make build && python3 site/build.py bin/crivo` writes `_site/`.
 
@@ -202,4 +204,8 @@ Places where the specification left room, and what was chosen:
 - **MCP without a click:** real writes through the MCP server require `--allow-exec` on the server command line, because MCP has no per-command approval like the one VS Code gives the terminal.
 - **`LIMIT`/`OFFSET`** must be integer constants; `WITH TIES` is refused. The footer distinguishes the policy cap (`truncado`) from the query's own `LIMIT`.
 - **`crivo test -f`** accepts `-- espera: aceito|barrado` before each statement and exits with 2 if anything diverges.
+- **`connect` cannot redirect the target:** the `host`, `hostaddr`, `service` and `servicefile` parameters are rejected, because with them the URL shows one host and the driver connects to another. At connect time the TLS check looks at the target the driver will actually use (including `sslmode=prefer` fallbacks), not at a re-parse of the URL.
+- **`WITH RECURSIVE`:** Postgres lets each CTE reference the ones defined after it; Crivo refuses that forward reference (and the CTE's own name outside the recursive term) instead of resolving the name as the real table with the same name.
+- **Upsert:** `INSERT ... ON CONFLICT DO UPDATE` is refused on tables with a read or update `where` filter, because it changes the existing row without going through the `WHERE`. `ON CONFLICT DO NOTHING` is still accepted.
+- **JSON with repeated columns:** `SELECT a.id, b.id` comes out with keys `id` and `id_2`, so no value is lost.
 - Tables named like a directive (`name`, `limit`, ...) cannot have a rule in v1; partitions do not appear in the schema (query the parent table).

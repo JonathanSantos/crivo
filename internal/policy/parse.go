@@ -477,6 +477,14 @@ func (ps *parser) checkURL(raw string, pos Pos) {
 	if u.Host == "" {
 		ps.errf(pos, "connect precisa de host")
 	}
+	// O driver deixa estes parâmetros trocarem o destino da URL: com ?host=,
+	// postgres://u@localhost/db?host=remoto conectaria no remoto sem passar
+	// pela regra de TLS de host remoto. O host vem só da própria URL.
+	for _, k := range []string{"host", "hostaddr", "service", "servicefile"} {
+		if u.Query().Has(k) {
+			ps.errf(pos, "connect não aceita o parâmetro %s: o host vem só da URL (postgres://usuario@host:5432/banco)", k)
+		}
+	}
 	if strings.Trim(u.Path, "/") == "" {
 		ps.errf(pos, "connect precisa do nome do banco (ex.: postgres://usuario@host:5432/banco)")
 	}

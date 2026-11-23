@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"crivo/internal/output"
+	"crivo/internal/testenv"
 )
 
 func runBase(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -23,6 +24,7 @@ func runBase(t *testing.T, args ...string) (code int, stdout, stderr string) {
 }
 
 func TestBaseNoArgsPrintsUsage(t *testing.T) {
+	testenv.Isolate(t)
 	for _, args := range [][]string{nil, {"help"}} {
 		code, out, _ := runBase(t, args...)
 		if code != output.ExitOK {
@@ -37,6 +39,7 @@ func TestBaseNoArgsPrintsUsage(t *testing.T) {
 // Antes, `exec "<escrita>" --help` imprimia a ajuda e seguia para executar a
 // escrita (só parava por falta de senha). A ajuda não pode chegar ao banco.
 func TestBaseHelpNeverRunsCommand(t *testing.T) {
+	testenv.Isolate(t)
 	cases := [][]string{
 		{"exec", "DELETE FROM pedido_itens WHERE pedido_id = 1", "--help"},
 		{"query", "SELECT id FROM pedidos", "-h"},
@@ -59,6 +62,7 @@ func TestBaseHelpNeverRunsCommand(t *testing.T) {
 // --dry-run=false virava escrita real com uma linha de comando que ainda
 // contém "--dry-run" (o texto que o auto-approve do VS Code procura).
 func TestDryRunRejectsValue(t *testing.T) {
+	testenv.Isolate(t)
 	for _, v := range []string{"false", "0", "no", "true"} {
 		code, _, errOut := runBase(t, "exec", "DELETE FROM pedido_itens WHERE pedido_id = 1", "--dry-run="+v)
 		if code != output.ExitConfig {
@@ -76,6 +80,7 @@ func TestDryRunRejectsValue(t *testing.T) {
 // Sem o banco: confere só o que o kong entrega ao exec. Se a flag deixasse de
 // ligar, toda simulação viraria escrita real.
 func TestDryRunFlagParsing(t *testing.T) {
+	testenv.Isolate(t)
 	cases := []struct {
 		args []string
 		want bool

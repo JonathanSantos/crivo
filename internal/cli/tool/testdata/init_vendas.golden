@@ -1,0 +1,42 @@
+# vendas.crivo, gerado por crivo init
+# Edite as regras e depois rode: crivo check vendas.crivo && crivo test vendas.crivo "SELECT ..."
+
+name    vendas
+about   "TODO: descreva a base em uma frase"
+env     preprod
+
+connect postgres://svc@pg-hml:5432/vendas?sslmode=verify-full
+secret  keychain
+schema  public
+
+limit   500 rows
+timeout 5s
+
+# Tudo começa negado (o que não tem regra não existe para a IA).
+# Para liberar, tire o "#" e troque deny pelas ações, por exemplo:
+#   read, update(status) max 20
+#   read except(cpf) mask(email: partial)
+#   read where status <> 'cancelado'
+
+#   colunas: id, acao
+# audit_log     deny
+
+#   colunas: id, nome, cpf, email, telefone, cidade
+## Clientes PJ
+# clientes      deny
+
+#   colunas: id, pedido_id, valor, status, pago_em
+# pagamentos    deny
+
+#   colunas: id, pedido_id, produto_id, quantidade, preco
+# pedido_itens  deny
+
+#   colunas: id, cliente_id, status, total, observacao, criado_em
+## Pedidos de venda
+# pedidos       deny
+
+#   colunas: id, nome, preco, ativo
+# produtos      deny
+
+#   colunas: id, login, senha_hash
+# usuarios      deny

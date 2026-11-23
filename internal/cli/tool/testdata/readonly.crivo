@@ -1,0 +1,10 @@
+# Política só de leitura, com papel e banco que precisam de aspas no SQL.
+name    leitura
+about   "Só leitura"
+env     dev
+connect postgres://svc@localhost:5432/Vendas-HML
+secret  keychain
+timeout 3s
+
+pedidos         read
+pagamentos      read where status <> 'estornado'

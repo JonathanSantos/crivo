@@ -230,7 +230,8 @@ func writeJSON(w io.Writer, r *Rows) error {
 		Footer    string           `json:"footer,omitempty"`
 		Truncated bool             `json:"output_truncated,omitempty"`
 	}
-	o := out{Columns: r.Columns, Rows: []map[string]any{}, Footer: r.Footer}
+	keys := uniqueKeys(r.Columns)
+	o := out{Columns: keys, Rows: []map[string]any{}, Footer: r.Footer}
 	total := 0
 	for _, row := range r.Values {
 		m := map[string]any{}
@@ -254,7 +255,7 @@ func writeJSON(w io.Writer, r *Rows) error {
 				}
 				total += len(s)
 			}
-			m[r.Columns[i]] = val
+			m[keys[i]] = val
 		}
 		if total > MaxTotal {
 			o.Truncated = true
@@ -265,6 +266,32 @@ func writeJSON(w io.Writer, r *Rows) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(o)
+}
+
+// uniqueKeys dá nomes únicos às colunas repetidas (id, id_2, id_3...): cada
+// linha do JSON é um objeto, e SELECT a.id, b.id perderia o primeiro valor.
+func uniqueKeys(cols []string) []string {
+	seen := map[string]bool{}
+	for _, c := range cols {
+		seen[c] = true
+	}
+	count := map[string]int{}
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		count[c]++
+		if count[c] == 1 {
+			out[i] = c
+			continue
+		}
+		k := fmt.Sprintf("%s_%d", c, count[c])
+		for seen[k] {
+			count[c]++
+			k = fmt.Sprintf("%s_%d", c, count[c])
+		}
+		seen[k] = true
+		out[i] = k
+	}
+	return out
 }
 
 // Message é uma recusa ou erro para o stderr.

@@ -85,6 +85,12 @@ func (a *analyzer) insertStmt(ins *pg_query.InsertStmt) {
 			if up == nil {
 				a.denyf(t.rule, "ON CONFLICT DO NOTHING", "ON CONFLICT DO UPDATE exige update em %s", t.name)
 			}
+			// O upsert altera a linha existente sem passar pelo WHERE do UPDATE,
+			// então os filtros de linha da regra não seriam aplicados (e o
+			// RETURNING devolveria linhas que o read esconde).
+			if up.Where != "" || (t.read != nil && t.read.Where != "") {
+				a.denyf(t.rule, "INSERT ... ON CONFLICT DO NOTHING, e o UPDATE separado com WHERE", "ON CONFLICT DO UPDATE não é aceito em %s, que tem filtro where", t.name)
+			}
 			excluded := &entry{name: "excluded"}
 			for _, c := range t.info.Columns {
 				excluded.cols = append(excluded.cols, column{name: c.Name})
@@ -351,13 +357,19 @@ func (a *analyzer) wrapperSelect(t *tableRef, rv *pg_query.RangeVar) (*pg_query.
 }
 
 // matchWrapper reconhece, na re-checagem, uma subquery que é exatamente o
-// filtro de leitura de uma tabela, e devolve a tabela.
-func (a *analyzer) matchWrapper(sel *pg_query.SelectStmt) *tableRef {
+// filtro de leitura de uma tabela, e devolve a tabela. Um nome sem schema
+// que é uma CTE em escopo nunca é a tabela: sem isso, a subquery
+// (SELECT ... FROM pagamentos WHERE status <> 'estornado') sobre uma CTE
+// chamada pagamentos passava como a tabela real e perdia as máscaras.
+func (a *analyzer) matchWrapper(sel *pg_query.SelectStmt, ctes *cteEnv) *tableRef {
 	if len(sel.FromClause) != 1 || sel.WhereClause == nil || sel.WithClause != nil {
 		return nil
 	}
 	rv := sel.FromClause[0].GetRangeVar()
 	if rv == nil || rv.Alias != nil {
+		return nil
+	}
+	if rv.Schemaname == "" && ctes.lookup(rv.Relname) != nil {
 		return nil
 	}
 	sch := rv.Schemaname

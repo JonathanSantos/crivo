@@ -1,0 +1,34 @@
+-- Usuário de privilégio mínimo para a política vendas (gerado por crivo grants; revise antes de rodar).
+-- Com ele, a política vira a segunda camada: o que escapar do Crivo o banco recusa.
+-- Depois troque o usuário em connect e grave a senha: crivo secret set vendas
+
+CREATE ROLE crivo_vendas LOGIN PASSWORD 'troque-esta-senha';
+GRANT CONNECT ON DATABASE vendas TO crivo_vendas;
+GRANT USAGE ON SCHEMA public TO crivo_vendas;
+
+-- pedidos (policy vendas.crivo:15)
+GRANT SELECT ON public.pedidos TO crivo_vendas;
+GRANT UPDATE (status, observacao) ON public.pedidos TO crivo_vendas;
+
+-- pedido_itens (policy vendas.crivo:18)
+GRANT SELECT ON public.pedido_itens TO crivo_vendas;
+GRANT INSERT ON public.pedido_itens TO crivo_vendas;
+GRANT DELETE ON public.pedido_itens TO crivo_vendas;
+
+-- produtos (policy vendas.crivo:20)
+GRANT SELECT ON public.produtos TO crivo_vendas;
+
+-- clientes (policy vendas.crivo:23)
+GRANT SELECT (id, nome, email, telefone, cidade) ON public.clientes TO crivo_vendas;
+
+-- pagamentos (policy vendas.crivo:26)
+GRANT SELECT ON public.pagamentos TO crivo_vendas;
+
+-- INSERT em colunas com default de sequência (serial/identity) precisa de USAGE na sequência:
+-- GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO crivo_vendas;
+
+-- Filtros de linha (where) também podem virar Row Level Security (opcional; afeta o papel crivo_vendas):
+-- CREATE POLICY crivo_vendas_read ON public.pagamentos FOR SELECT TO crivo_vendas USING (status <> 'estornado');
+-- e ALTER TABLE ... ENABLE ROW LEVEL SECURITY nas tabelas acima.
+
+ALTER ROLE crivo_vendas SET statement_timeout = '5000ms';

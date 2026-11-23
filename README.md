@@ -164,12 +164,14 @@ Arquivos locais: cache de schema em `~/.cache/crivo/<name>/schema.json` (TTL 10 
 ## Desenvolvimento
 
 ```bash
-make test                                                    # unidade, golden files, slot com binário real
-CRIVO_TEST_DSN=postgres://postgres:senha@localhost:5432/postgres make test-integration
+make test                                                    # unidade, golden files e ponta a ponta sem banco
+make test-integration                                        # Postgres real (descartável via initdb, se houver)
 make fuzz                                                    # go test -fuzz no sqlguard.Guard
 ```
 
-Os testes de integração usam `CRIVO_TEST_DSN` (o teste cria e apaga o schema `crivo_it`) ou, sem ela, testcontainers-go quando há Docker; sem nenhum dos dois, são pulados. Eles exercitam o binário gerado nos dois modos, CLI e MCP (este último como subprocesso, via cliente MCP real). Os golden files se regravam com `go test ./internal/policy ./internal/skill -update`.
+O `make test` não precisa de banco nem de rede e nunca toca a HOME, o cache ou o keychain reais: os testes usam `internal/testenv`, que aponta tudo para pastas temporárias e um keychain em memória. Inclui um teste de ponta a ponta (`cmd/crivo`) que compila o binário e percorre o fluxo com o schema vindo do DDL (`go test -short` o pula).
+
+Os testes de integração usam, nesta ordem, `CRIVO_TEST_DSN` (o teste cria e apaga o schema `crivo_it` e papéis temporários `crivo_it_*`), um Postgres descartável criado com `initdb` quando ele está no `PATH` (o `make test-integration` liga isso com `CRIVO_TEST_LOCALPG=1`), ou testcontainers-go quando há Docker; sem nenhum, são pulados. Eles exercitam o binário gerado nos dois modos, CLI e MCP, o `init` e o `check` conectados, a recuperação quando o schema muda e aplicam o SQL do `crivo grants` para conferir que o próprio banco passa a recusar o que a política nega. Os golden files se regravam com `go test ./internal/policy ./internal/skill ./internal/cli/tool -update`.
 
 O site fica em `site/` e é publicado no GitHub Pages pelo workflow `pages.yml` (a cada mudança em `main` e depois de cada release). Para ver localmente: `make build && python3 site/build.py bin/crivo` gera `_site/`.
 
@@ -204,4 +206,8 @@ Pontos em que a especificação deixava espaço, e o que foi escolhido:
 - **MCP sem clique:** a escrita real pelo servidor MCP exige `--allow-exec` na linha de comando do servidor, porque no MCP não há a aprovação por comando que o VS Code dá ao terminal.
 - **`LIMIT`/`OFFSET`** precisam ser constantes inteiras; `WITH TIES` é recusado. O rodapé diferencia o teto da política (`truncado`) do `LIMIT` da própria query.
 - **`crivo test -f`** aceita `-- espera: aceito|barrado` antes de cada statement e sai com 2 se algo divergir.
+- **`connect` sem desvio de destino:** os parâmetros `host`, `hostaddr`, `service` e `servicefile` são recusados, porque com eles a URL mostra um host e o driver conecta em outro. Na hora de conectar, a checagem de TLS olha o destino que o driver vai usar de fato (inclusive os alternativos do `sslmode=prefer`), não uma releitura da URL.
+- **`WITH RECURSIVE`:** o Postgres deixa cada CTE citar as definidas depois dela; o Crivo recusa essa referência adiante (e o próprio nome fora do termo recursivo), em vez de resolver o nome como a tabela real de mesmo nome.
+- **Upsert:** `INSERT ... ON CONFLICT DO UPDATE` é recusado em tabela com filtro `where` no read ou no update, porque altera a linha existente sem passar pelo `WHERE`. `ON CONFLICT DO NOTHING` continua aceito.
+- **JSON com colunas repetidas:** `SELECT a.id, b.id` sai com as chaves `id` e `id_2`, para nenhum valor sumir.
 - Tabelas com nome de diretiva (`name`, `limit`, ...) não podem ter regra na v1; partições não aparecem no schema (consulte a tabela-mãe).
