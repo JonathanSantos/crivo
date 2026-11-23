@@ -20,6 +20,11 @@ const (
 	useGeneral useCtx = iota // filtro, junção, ordenação, expressão
 	useBare                  // nua na lista de um SELECT cujo resultado sai
 	useGroup                 // GROUP BY, DISTINCT ON, count(DISTINCT x): aceito com hash
+	// Derivações que só revelam o que a máscara já mostra, aceitas em
+	// qualquer posição (filtro, junção, agrupamento): o domínio de uma coluna
+	// com máscara email e o ano/trimestre/mês de uma com máscara month.
+	useVisibleEmail
+	useVisibleMonth
 )
 
 // origin é a coluna de tabela de onde um valor vem.
@@ -130,8 +135,8 @@ type analyzer struct {
 	maxRows   int
 }
 
-func newAnalyzer(g *Guard, cmd Command, recheck bool) *analyzer {
-	return &analyzer{g: g, cmd: cmd, recheck: recheck, visited: map[any]bool{}, skipped: map[any]bool{}, policyCap: g.Policy.Limit}
+func newAnalyzer(g *Guard, cmd Command, recheck bool, limit int) *analyzer {
+	return &analyzer{g: g, cmd: cmd, recheck: recheck, visited: map[any]bool{}, skipped: map[any]bool{}, policyCap: limit}
 }
 
 func (a *analyzer) deny(d *Denial) { panic(denialPanic{d}) }
@@ -319,10 +324,12 @@ func (a *analyzer) checkOrigin(o origin, ctx useCtx, label string) {
 	}
 	switch mode := act.MaskOf(o.col); {
 	case mode == "":
+	case mode == policy.MaskEmail && ctx == useVisibleEmail, mode == policy.MaskMonth && ctx == useVisibleMonth:
+		// a derivação só mostra o que a máscara já mostra
 	case mode.EqualityStable():
 		// hash e pseudonym: o mesmo valor vira sempre o mesmo texto, então
 		// agrupar não revela nada além do que a própria saída já mostra
-		if ctx == useGeneral {
+		if ctx != useBare && ctx != useGroup {
 			a.denyf(o.t.rule, "a coluna nua na lista do SELECT, em GROUP BY ou em count(DISTINCT ...)",
 				"coluna %q é mascarada (%s) e não pode ser usada em filtro, junção, ordenação ou expressão", label, mode)
 		}
@@ -588,9 +595,57 @@ func (a *analyzer) expr(s *scope, ctes *cteEnv, n *pg_query.Node, ctx useCtx) {
 	}
 }
 
+// visiblePart reconhece split_part(col, '@', 2), date_trunc('month', col) e
+// extract/date_part('year', col): devolve o argumento coluna e o contexto
+// que deixa a máscara correspondente passar. Só a coluna direto conta.
+func visiblePart(name string, fc *pg_query.FuncCall) (*pg_query.Node, useCtx, bool) {
+	if fc.AggDistinct || fc.AggStar || fc.Over != nil || fc.AggFilter != nil || len(fc.AggOrder) > 0 || fc.FuncVariadic {
+		return nil, 0, false
+	}
+	args := fc.Args
+	str := func(n *pg_query.Node) (string, bool) {
+		c := n.GetAConst()
+		if c == nil || c.Isnull {
+			return "", false
+		}
+		sv, ok := c.Val.(*pg_query.A_Const_Sval)
+		if !ok {
+			return "", false
+		}
+		return strings.ToLower(sv.Sval.Sval), true
+	}
+	switch name {
+	case "split_part":
+		if len(args) == 3 && args[0].GetColumnRef() != nil {
+			if sep, ok := str(args[1]); ok && sep == "@" {
+				if n, ok := intConst(args[2]); ok && n == 2 {
+					return args[0], useVisibleEmail, true
+				}
+			}
+		}
+	case "date_trunc", "date_part", "extract":
+		if len(args) == 2 && args[1].GetColumnRef() != nil {
+			if unit, ok := str(args[0]); ok && (unit == "year" || unit == "quarter" || unit == "month") {
+				return args[1], useVisibleMonth, true
+			}
+		}
+	}
+	return nil, 0, false
+}
+
 func (a *analyzer) funcCall(s *scope, ctes *cteEnv, fc *pg_query.FuncCall) {
 	a.visited[fc] = true
 	name, _ := funcName(fc)
+	if col, ctx, ok := visiblePart(name, fc); ok {
+		for _, arg := range fc.Args {
+			if arg == col {
+				a.expr(s, ctes, arg, ctx)
+			} else {
+				a.expr(s, ctes, arg, useGeneral)
+			}
+		}
+		return
+	}
 	argCtx := useGeneral
 	if name == "count" && fc.AggDistinct && len(fc.Args) == 1 && fc.Args[0].GetColumnRef() != nil {
 		argCtx = useGroup // count(DISTINCT x) não expõe o valor

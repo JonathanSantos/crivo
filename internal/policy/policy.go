@@ -87,6 +87,7 @@ type Policy struct {
 	QuotaRowsDay   int64     // linhas lidas ou afetadas por dia
 	ApprovalWrites bool      // escrita real só depois de vendas approve
 	AuditSyslog    bool      // também envia a auditoria ao syslog
+	ExportRows     int       // teto do comando export (0: sem export)
 
 	// Queries são as consultas nomeadas (diretiva query), na ordem do arquivo.
 	Queries []*NamedQuery

@@ -91,7 +91,7 @@ func TestApprovalAgainstPostgres(t *testing.T) {
 	before := status()
 
 	out, code := runIn(t, env, dir, bin, "exec", "UPDATE pedidos SET status = 'enviado' WHERE id = 1")
-	m := regexp.MustCompile(`pendente #([0-9a-f]{6})`).FindStringSubmatch(out)
+	m := regexp.MustCompile(`PENDENTE #([0-9a-f]{6})`).FindStringSubmatch(out)
 	if code != 6 || m == nil || !strings.Contains(out, "approve "+m[1]) {
 		t.Fatalf("exec com aprovação: código %d\n%s", code, out)
 	}
@@ -152,5 +152,32 @@ func TestDescribeSampleAgainstPostgres(t *testing.T) {
 	out, code := runIn(t, env, dir, bin, "describe", "clientes", "--sample", "2")
 	if code != 0 || !strings.Contains(out, "@atlaslog.com.br") || strings.Contains(out, "contato@") || strings.Contains(out, "123.456") || strings.Contains(out, "Atlas Log") {
 		t.Fatalf("código %d\n%s", code, out)
+	}
+}
+
+// export grava o CSV com as mesmas máscaras, para no teto da exportação e
+// respeita a cota do dia.
+func TestExportAgainstPostgres(t *testing.T) {
+	f := setup(t)
+	bin, env, dir := generatedWith(t, f, "export 2 rows\n")
+	out, code := runIn(t, env, dir, bin, "export", "SELECT id, email, cidade FROM clientes ORDER BY id", "-o", "clientes.csv")
+	if code != 0 || !strings.Contains(out, "✓ 2 linha(s) em clientes.csv") || !strings.Contains(out, "parou no teto de exportação da política (2 linhas)") {
+		t.Fatalf("export: código %d\n%s", code, out)
+	}
+	csv, err := os.ReadFile(filepath.Join(dir, "clientes.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(csv) != "id,email,cidade\n1,co***@atlaslog.com.br,Campinas\n2,fi***@nortetex.com.br,Recife\n" {
+		t.Fatalf("CSV inesperado:\n%s", csv)
+	}
+
+	bin, env, dir = generatedWith(t, f, "export 100 rows\nquota 2 rows/day\n")
+	out, code = runIn(t, env, dir, bin, "export", "SELECT id FROM clientes", "-o", "a.csv")
+	if code != 0 || !strings.Contains(out, "é o que resta da cota de hoje") || !strings.Contains(out, "restam 0 linhas da cota de hoje") {
+		t.Fatalf("export com cota: código %d\n%s", code, out)
+	}
+	if out, code = runIn(t, env, dir, bin, "export", "SELECT id FROM clientes", "-o", "b.csv"); code != 2 || !strings.Contains(out, "cota de 2 linhas por dia atingida") {
+		t.Fatalf("export depois da cota: código %d\n%s", code, out)
 	}
 }

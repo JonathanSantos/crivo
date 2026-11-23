@@ -107,7 +107,7 @@ Full example in [examples/vendas.crivo](examples/vendas.crivo) and test cases in
 | `where <expr>` | Row filter: on reads the table becomes a filtered subquery (keeping the alias); on `update`/`delete` it is `AND`ed into the `WHERE`. Extends to the next top-level comma. |
 | `max N` | Cap on rows affected by a write (default 50). Above it: rollback and refusal. |
 | `limit N` | Per-table cap on rows per query (lower than the global one). |
-| `mask(col: mode)` | Mask applied to the result. Modes: `partial` (jo***@domain), `redact` (***), `hash` (stable within one execution), `email` (domain only), `last4` (last 4 characters), `month` (date becomes YYYY-MM), `bucket N` (number becomes a range of N), `pseudonym` (stable across executions, local key). A masked column may only appear bare in the SELECT list; `hash` and `pseudonym` may also go in `GROUP BY`/`DISTINCT`. |
+| `mask(col: mode)` | Mask applied to the result. Modes: `partial` (jo***@domain), `redact` (***), `hash` (stable within one execution), `email` (domain only), `last4` (last 4 characters), `month` (date becomes YYYY-MM), `bucket N` (number becomes a range of N), `pseudonym` (stable across executions, local key). A masked column may only appear bare in the SELECT list; `hash` and `pseudonym` may also go in `GROUP BY`/`DISTINCT`. What the mask already shows can be used anywhere: the domain of `email` with `split_part(col, '@', 2)` and the year, quarter or month of `month` with `date_trunc`/`extract`. |
 | `deny` / no rule | The table does not exist for the AI. `pg_*`, `pg_catalog` and `information_schema` are always blocked. |
 | `## text` | Table description for the skill and for `describe` (must sit right above the rule). |
 | line starting with a space | Continues the previous rule. |
@@ -117,8 +117,9 @@ Full example in [examples/vendas.crivo](examples/vendas.crivo) and test cases in
 | `rate N/min` · `quota N rows/day` | Executions per minute and rows per day. Counted from the local audit log: a guard against an AI stuck in a loop, not a security boundary. |
 | `approval writes` | A real `exec` only leaves the write pending; a person runs it with `vendas approve <id>` in the terminal. |
 | `audit syslog` | Also sends every audit line to syslog (macOS and Linux). |
+| `export N rows` | Enables `vendas export "<SELECT>" -o file.csv`: the same read as `query`, capped at N rows instead of `limit`, written as CSV (relative path, no overwrite without `--force`). Rows count toward `quota`. Not available over MCP. |
 
-Precedence: exact name beats pattern; among patterns, the longest literal prefix; on a tie, `deny` wins. The new directives (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`) cannot be table names.
+Precedence: exact name beats pattern; among patterns, the longest literal prefix; on a tie, `deny` wins. The new directives (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`, `export`) cannot be table names.
 
 ## Commands
 
@@ -128,7 +129,7 @@ Precedence: exact name beats pattern; among patterns, the longest literal prefix
 crivo test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql
 ```
 
-**Generated binary (`vendas`, base mode):** `policy`, `tables`, `describe <table> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [query] [p=value...]`, `approve|pending|reject` (with `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f file.sql`. The mode is decided by the embedded slot; there is no flag or variable that switches modes, so the AI cannot reach `build` through a generated binary.
+**Generated binary (`vendas`, base mode):** `policy`, `tables`, `describe <table> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [query] [p=value...]`, `export "<sql>" -o file.csv` (with `export N rows`), `approve|pending|reject` (with `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f file.sql`. The mode is decided by the embedded slot; there is no flag or variable that switches modes, so the AI cannot reach `build` through a generated binary.
 
 Exit codes: `0` success, `1` bug, `2` refused by Crivo (including the cost ceiling, `rate` and `quota`), `3` invalid SQL, `4` database error, `5` configuration, missing secret or expired policy, `6` write pending approval.
 

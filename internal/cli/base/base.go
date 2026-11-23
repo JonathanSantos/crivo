@@ -123,6 +123,9 @@ func mainWith(src []byte, args []string, stdout, stderr io.Writer) int {
 			kong.DynamicCommand("query", "Executa um SELECT em transação READ ONLY.", "", &queryCmd{}),
 			kong.DynamicCommand("explain", "Plano (EXPLAIN sem ANALYZE) de um SELECT validado.", "", &explainCmd{}))
 	}
+	if p.HasRead() && p.ExportRows > 0 {
+		opts = append(opts, kong.DynamicCommand("export", fmt.Sprintf("Grava o resultado de um SELECT em CSV, até %d linhas.", p.ExportRows), "", &exportCmd{}))
+	}
 	if len(p.Queries) > 0 {
 		opts = append(opts, kong.DynamicCommand("run", "Roda uma consulta nomeada da política (sem nome: lista as consultas).", "", &runCmd{}))
 	}
@@ -475,14 +478,15 @@ func (e *env) runNamed(q *policy.NamedQuery, values map[string]string) error {
 }
 
 func (e *env) listQueries() error {
-	rows := &output.Rows{Columns: []string{"consulta", "parâmetros", "descrição"}}
+	rows := &output.Rows{Columns: []string{"consulta", "parâmetros", "descrição", "sql"}}
 	for _, q := range e.p.Queries {
 		var ps []string
 		for _, p := range q.Params {
 			ps = append(ps, p.Name+" "+string(p.Type))
 		}
-		name, params, doc := q.Name, strings.Join(ps, ", "), q.Doc
-		rows.Values = append(rows.Values, []*string{&name, &params, &doc})
+		// o SQL mostra o que a consulta filtra (ex.: se exclui cancelados)
+		name, params, doc, sql := q.Name, strings.Join(ps, ", "), q.Doc, strings.Join(strings.Fields(q.SQL), " ")
+		rows.Values = append(rows.Values, []*string{&name, &params, &doc, &sql})
 	}
 	rows.Footer = fmt.Sprintf("uso: %s run <consulta> nome=valor ...", e.p.Name)
 	return output.Write(e.stdout, e.format, rows)

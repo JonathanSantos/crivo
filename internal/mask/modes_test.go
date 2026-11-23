@@ -22,6 +22,8 @@ func TestNewModes(t *testing.T) {
 		{policy.Mask{Mode: policy.MaskEmail}, "ana.souza@empresa.com.br", "***@empresa.com.br"},
 		{policy.Mask{Mode: policy.MaskEmail}, "sem-arroba", "***"},
 		{policy.Mask{Mode: policy.MaskEmail}, "fim@", "***"},
+		// corta no primeiro @, igual ao split_part(email, '@', 2) que o guard aceita
+		{policy.Mask{Mode: policy.MaskEmail}, "a@b@c.com", "***@b@c.com"},
 		{policy.Mask{Mode: policy.MaskLast4}, "123.456.789-01", "***.***.*89-01"},
 		{policy.Mask{Mode: policy.MaskLast4}, "4111 1111 1111 1234", "**** **** **** 1234"},
 		{policy.Mask{Mode: policy.MaskLast4}, "1234", "***"}, // curto demais: não sobra nada a esconder

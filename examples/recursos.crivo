@@ -18,6 +18,7 @@ cost     50000
 rate     30/min
 quota    20000 rows/day
 approval writes
+export   50000 rows
 
 ## Pedidos de um cliente, mais novos primeiro
 query pedidos_do_cliente(cliente_id int) "SELECT id, status, total, criado_em FROM pedidos WHERE cliente_id = $1 ORDER BY criado_em DESC"

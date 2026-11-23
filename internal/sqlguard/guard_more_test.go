@@ -787,3 +787,33 @@ func TestNaturalJoinWithMaskedOrUnnamedColumns(t *testing.T) {
 		{sql: "SELECT s2.id FROM (SELECT 1 AS id) s1 NATURAL JOIN (SELECT id FROM clientes) s2", ok: true, want: "NATURAL JOIN"},
 	})
 }
+
+// Derivações que só revelam o que a máscara já mostra: o domínio (máscara
+// email) e o ano/trimestre/mês (máscara month) podem filtrar, juntar e
+// agrupar. Qualquer forma parecida, ou a mesma função noutra máscara, segue
+// recusada. Veio da simulação com agentes: achar um cliente pelo domínio
+// exigia listar todos e ler à mão.
+func TestVisiblePartDerivations(t *testing.T) {
+	g := customGuard(t, "clientes read except(cpf) mask(email: email, telefone: partial, nome: hash)\npagamentos read mask(pago_em: month) where status <> 'estornado'\n")
+	runGuardCases(t, g, []guardCase{
+		{sql: "SELECT id FROM clientes WHERE split_part(email, '@', 2) = 'atlaslog.com.br'", ok: true, want: "split_part(email, '@', 2) = 'atlaslog.com.br'"},
+		{sql: "SELECT split_part(email, '@', 2) AS dominio, count(*) FROM clientes GROUP BY 1", ok: true, want: "GROUP BY 1"},
+		{sql: "SELECT id FROM clientes WHERE lower(split_part(email, '@', 2)) LIKE 'atlas%'", ok: true, want: "LIKE"},
+		{sql: "SELECT date_trunc('month', pago_em) AS mes, count(*) FROM pagamentos GROUP BY 1", ok: true, want: "date_trunc('month', pago_em)", filters: 1},
+		{sql: "SELECT id FROM pagamentos WHERE extract(year FROM pago_em) = 2026", ok: true, want: "extract ('year' FROM pago_em) = 2026", filters: 1},
+		{sql: "SELECT id FROM pagamentos WHERE date_part('quarter', pago_em) = 1", ok: true, want: "date_part('quarter', pago_em)", filters: 1},
+		// o resto da coluna continua escondido
+		{sql: "SELECT id FROM clientes WHERE split_part(email, '@', 1) = 'ana'", want: "mascarada (email)"},
+		{sql: "SELECT id FROM clientes WHERE email LIKE '%@atlaslog.com.br'", want: "mascarada (email)"},
+		{sql: "SELECT id FROM clientes WHERE split_part(lower(email), '@', 2) = 'x'", want: "mascarada (email)"},
+		{sql: "SELECT id FROM clientes WHERE split_part(email, '.', 2) = 'com'", want: "mascarada (email)"},
+		{sql: "SELECT id FROM pagamentos WHERE date_trunc('day', pago_em) = '2026-01-01'", want: "mascarada (month)"},
+		{sql: "SELECT id FROM pagamentos WHERE extract(day FROM pago_em) = 1", want: "mascarada (month)"},
+		{sql: "SELECT id FROM pagamentos WHERE date_trunc('month', pago_em, 'UTC') IS NULL", want: "mascarada (month)"},
+		// a mesma derivação em outra máscara não vale
+		{sql: "SELECT id FROM clientes WHERE split_part(telefone, '@', 2) = 'x'", want: "mascarada (partial)"},
+		{sql: "SELECT id FROM clientes WHERE split_part(nome, '@', 2) = 'x'", want: "mascarada (hash)"},
+		// coluna bloqueada continua bloqueada
+		{sql: "SELECT id FROM clientes WHERE split_part(cpf, '@', 2) = 'x'", want: `coluna "cpf" não está liberada`},
+	})
+}

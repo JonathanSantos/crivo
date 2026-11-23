@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,6 +144,50 @@ func TestPostgresColumnNames(t *testing.T) {
 		rows.Close()
 		if got != want {
 			t.Errorf("%s: o Postgres chama de %q, o teste do guard espera %q", sql, got, want)
+		}
+	}
+}
+
+// As derivações aceitas (split_part do email, date_trunc do mês) devolvem
+// exatamente o que a máscara já mostra, linha a linha, no banco de verdade.
+func TestVisiblePartsMatchMasks(t *testing.T) {
+	f := setup(t)
+	bin, env, dir := variant(t, f, "clientes        read except(cpf) mask(email: partial, telefone: redact, nome: hash)",
+		"clientes        read except(cpf) mask(email: email, telefone: redact, nome: hash)")
+	out, code := runIn(t, env, dir, bin, "query", "SELECT email, split_part(email, '@', 2) AS dominio FROM clientes", "--format", "json")
+	if code != 0 {
+		t.Fatalf("código %d\n%s", code, out)
+	}
+	var res struct {
+		Rows []map[string]string `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || len(res.Rows) == 0 {
+		t.Fatalf("saída: %v\n%s", err, out)
+	}
+	for _, r := range res.Rows {
+		if r["email"] == "" { // NULL nas duas
+			continue
+		}
+		if "***@"+r["dominio"] != r["email"] {
+			t.Errorf("o domínio derivado %q não é o que a máscara mostra %q", r["dominio"], r["email"])
+		}
+	}
+	if out, code = runIn(t, env, dir, bin, "query", "SELECT id FROM clientes WHERE split_part(email, '@', 2) = 'atlaslog.com.br'"); code != 0 || !strings.Contains(out, "1 linha") {
+		t.Errorf("filtro pelo domínio: código %d\n%s", code, out)
+	}
+
+	bin, env, dir = variant(t, f, "pagamentos      read where status <> 'estornado'", "pagamentos      read mask(pago_em: month) where status <> 'estornado'")
+	out, code = runIn(t, env, dir, bin, "query", "SELECT pago_em, to_char(date_trunc('month', pago_em), 'YYYY-MM') AS mes FROM pagamentos", "--format", "json")
+	if code != 0 {
+		t.Fatalf("código %d\n%s", code, out)
+	}
+	res.Rows = nil
+	if err := json.Unmarshal([]byte(out), &res); err != nil || len(res.Rows) == 0 {
+		t.Fatalf("saída: %v\n%s", err, out)
+	}
+	for _, r := range res.Rows {
+		if r["mes"] != r["pago_em"] {
+			t.Errorf("o mês derivado %q não é o que a máscara mostra %q", r["mes"], r["pago_em"])
 		}
 	}
 }

@@ -84,7 +84,7 @@ var directiveNames = map[string]bool{
 	"name": true, "about": true, "env": true, "connect": true, "secret": true,
 	"schema": true, "limit": true, "timeout": true, "functions": true,
 	"expires": true, "cost": true, "rate": true, "quota": true, "approval": true,
-	"audit": true, "query": true,
+	"audit": true, "query": true, "export": true,
 }
 
 // BlockedFunction diz se a função é bloqueada mesmo quando listada em functions.
@@ -526,6 +526,18 @@ func (ps *parser) parseDirective(s *scanner) {
 			p.ApprovalWrites = true
 		}
 		ps.expectEOL(s, "approval")
+	case "export":
+		n, npos := s.word("")
+		v, err := strconv.Atoi(n)
+		if err != nil || v <= 0 {
+			ps.errf(npos, "export precisa do teto de linhas, um inteiro positivo (ex.: export 50000 rows): %q", n)
+		} else {
+			p.ExportRows = v
+		}
+		if u, upos := s.word(""); u != "rows" {
+			ps.errf(upos, `export precisa terminar com "rows" (ex.: export 50000 rows)`)
+		}
+		ps.expectEOL(s, "export")
 	case "audit":
 		if w, wpos := s.word(""); w != "syslog" {
 			ps.errf(wpos, `audit só aceita "syslog" (o log em arquivo é sempre gravado): %q`, w)

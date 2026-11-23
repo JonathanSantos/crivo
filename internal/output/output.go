@@ -4,6 +4,7 @@
 package output
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,7 +54,7 @@ func ReadFooter(n int, truncated, byRequest bool) string {
 	s := plural(n, "linha", "linhas")
 	switch {
 	case truncated && byRequest:
-		return s + " (LIMIT da query; pode haver mais)"
+		return s + " (cortado no LIMIT da query: há mais linhas)"
 	case truncated:
 		return s + " (truncado: refine o filtro ou agregue)"
 	}
@@ -170,6 +171,29 @@ func writeMarkdown(w io.Writer, r *Rows) {
 	if r.Footer != "" {
 		fmt.Fprintf(w, "\n_%s_\n", strings.ReplaceAll(r.Footer, "_", `\_`))
 	}
+}
+
+// WriteCSV grava as linhas em CSV (RFC 4180) com cabeçalho; NULL vira campo
+// vazio. Sem corte de tamanho: é para arquivo, não para o chat.
+func WriteCSV(w io.Writer, r *Rows) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write(r.Columns); err != nil {
+		return err
+	}
+	rec := make([]string, len(r.Columns))
+	for _, row := range r.Values {
+		for i := range rec {
+			rec[i] = ""
+			if i < len(row) && row[i] != nil {
+				rec[i] = *row[i]
+			}
+		}
+		if err := cw.Write(rec); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
 }
 
 func writeTSV(w io.Writer, r *Rows) {

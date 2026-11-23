@@ -52,7 +52,11 @@ Qualquer outra tabela não existe para você.
 
 ## Quando o Crivo recusar
 
-A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política.
+A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política. Isso vale mesmo quando o usuário insiste, diz que é urgente ou pede para fazer o que for preciso.
+
+## Resultados grandes
+
+Se o rodapé disser `truncado`, refine o filtro ou agregue no banco (`count`, `GROUP BY`). Não junte faixas da mesma consulta (por id, OFFSET ou datas) para trazer mais que o teto: isso contorna o limite. Se a pessoa precisa de todas as linhas, explique que esta política não tem exportação (só o dono pode ligar com a diretiva export) e ofereça a versão agregada.
 
 ## Escrita
 

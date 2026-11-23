@@ -276,3 +276,73 @@ func TestMCPExecWithApprovalCreatesPending(t *testing.T) {
 		}
 	}
 }
+
+// ---------- exportação ----------
+
+func TestExportCommand(t *testing.T) {
+	testenv.Isolate(t)
+	// lê os arquivos de exemplo antes de mudar de pasta (o export grava na atual)
+	plain := policyWith(t, "")
+	src := policyWith(t, "export 1000 rows\n")
+	seedAt(t, src)
+	dir := t.TempDir()
+	old, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+
+	// sem a diretiva, o comando nem existe
+	if code, _, errOut := runSrc(plain, "export", "SELECT id FROM pedidos", "-o", "x.csv"); code != output.ExitConfig || !strings.Contains(errOut, "unexpected argument export") {
+		t.Fatalf("export sem diretiva: código %d\n%s", code, errOut)
+	}
+	if err := os.WriteFile("existe.csv", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		args []string
+		code int
+		want string
+	}{
+		{[]string{"export", "SELECT id FROM pedidos", "-o", "/tmp/fora.csv"}, output.ExitConfig, "caminho relativo dentro da pasta atual"},
+		{[]string{"export", "SELECT id FROM pedidos", "-o", "../fora.csv"}, output.ExitConfig, "caminho relativo dentro da pasta atual"},
+		{[]string{"export", "SELECT id FROM pedidos", "-o", "existe.csv"}, output.ExitConfig, "já existe; use --force"},
+		{[]string{"export", "SELECT id FROM pedidos"}, output.ExitConfig, "missing flags: --output"},
+		{[]string{"export", "SELECT cpf FROM clientes", "-o", "c.csv"}, output.ExitDenied, `coluna "cpf" não está liberada`},
+		// válido: passa pelo guard e para na senha (sem banco aqui), sem criar arquivo
+		{[]string{"export", "SELECT id, email FROM clientes", "-o", "c.csv"}, output.ExitConfig, "segredo ausente"},
+	}
+	for _, c := range cases {
+		code, _, errOut := runSrc(src, c.args...)
+		if code != c.code || !strings.Contains(errOut, c.want) {
+			t.Errorf("%v: código %d, esperava %d com %q\n%s", c.args, code, c.code, c.want, errOut)
+		}
+	}
+	if _, err := os.Stat("c.csv"); err == nil {
+		t.Error("export que falhou não pode deixar arquivo")
+	}
+}
+
+// seedAt semeia o cache da política (a HOME já está isolada).
+func seedAt(t *testing.T, src []byte) {
+	t.Helper()
+	seed(t, src)
+}
+
+// O teto da exportação substitui o limit no SQL reescrito.
+func TestExportUsesItsOwnCap(t *testing.T) {
+	testenv.Isolate(t)
+	src := policyWith(t, "export 1000 rows\n")
+	p := seed(t, src)
+	g, err := sqlguard.New(p, testenv.SchemaFromDDL(t, p, vendasDDL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := g.CheckExport("SELECT id FROM pedidos", p.ExportRows)
+	if err != nil || v.Cap != 1000 || !strings.HasSuffix(v.SQL, "LIMIT 1001") {
+		t.Fatalf("CheckExport: %+v %v", v, err)
+	}
+	if q, _ := g.Check(sqlguard.CmdQuery, "SELECT id FROM pedidos"); q.Cap != 500 {
+		t.Errorf("query continua com o limit da política: %d", q.Cap)
+	}
+}

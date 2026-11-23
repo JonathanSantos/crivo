@@ -164,10 +164,18 @@ func (e *env) pendingWrite(sql string, v *sqlguard.Verdict) error {
 	if err != nil {
 		return &cli.ConfigError{Msg: "não foi possível gravar a pendência: " + err.Error()}
 	}
-	fmt.Fprintf(e.stdout, "-- escrita pendente #%s: %s (simulação; nada foi gravado)\n", pd.ID, output.WriteFooter(res.Affected, true))
+	fmt.Fprintf(e.stdout, "-- PENDENTE #%s: nada foi gravado ainda.\n", pd.ID)
+	fmt.Fprintf(e.stdout, "-- quando aprovada, afetará %s (contado agora, numa simulação desfeita)\n", plural(res.Affected, "linha", "linhas"))
 	fmt.Fprintf(e.stdout, "-- sql %s\n", v.SQL)
-	fmt.Fprintf(e.stdout, "-- esta política exige aprovação humana: peça para a pessoa rodar, no terminal, %s approve %s (vale %s)\n", e.p.Name, pd.ID, PendingTTL)
+	fmt.Fprintf(e.stdout, "-- só uma pessoa aprova, no terminal: %s approve %s (vale %s). Passe esse comando ao usuário; não rode você mesmo.\n", e.p.Name, pd.ID, PendingTTL)
 	return &cli.PendingError{ID: pd.ID}
+}
+
+func plural(n int64, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 type approveCmd struct {

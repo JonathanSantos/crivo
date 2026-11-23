@@ -155,7 +155,17 @@ func (g *Guard) FilterNode(a *policy.Action) *pg_query.Node { return g.filters[a
 
 // Check valida o SQL para o comando. Devolve *Denial, *ParseError ou outro
 // erro (bug) quando não aceita.
-func (g *Guard) Check(cmd Command, sql string) (v *Verdict, err error) {
+func (g *Guard) Check(cmd Command, sql string) (*Verdict, error) {
+	return g.check(cmd, sql, g.Policy.Limit)
+}
+
+// CheckExport valida uma leitura para exportação: igual a Check, mas o teto
+// de linhas é o da diretiva export (os limit por tabela continuam valendo).
+func (g *Guard) CheckExport(sql string, limit int) (*Verdict, error) {
+	return g.check(CmdQuery, sql, limit)
+}
+
+func (g *Guard) check(cmd Command, sql string, limit int) (v *Verdict, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			v, err = nil, fmt.Errorf("erro interno do sqlguard: %v", r)
@@ -178,7 +188,7 @@ func (g *Guard) Check(cmd Command, sql string) (v *Verdict, err error) {
 	}
 
 	// Primeira passada: checagens + coleta das reescritas.
-	a := newAnalyzer(g, cmd, false)
+	a := newAnalyzer(g, cmd, false, limit)
 	if d := a.run(tree.Stmts[0]); d != nil {
 		return nil, d
 	}
@@ -203,7 +213,7 @@ func (g *Guard) Check(cmd Command, sql string) (v *Verdict, err error) {
 	if !sameTree(tree.Stmts[0], tree2.Stmts[0]) {
 		return nil, &Denial{Reason: "a reescrita não é estável (o deparse muda o AST); simplifique a query", Accepted: "a mesma consulta escrita de forma mais simples"}
 	}
-	b := newAnalyzer(g, cmd, true)
+	b := newAnalyzer(g, cmd, true, limit)
 	if d := b.run(tree2.Stmts[0]); d != nil {
 		return nil, &Denial{Rule: d.Rule, Reason: "re-checagem do SQL reescrito falhou: " + d.Reason, Accepted: d.Accepted}
 	}

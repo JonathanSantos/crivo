@@ -107,7 +107,7 @@ Exemplo completo em [examples/vendas.crivo](examples/vendas.crivo) e casos de te
 | `where <expr>` | Filtro de linha: em leitura a tabela vira subquery filtrada (mantendo o alias); em `update`/`delete` entra com `AND` no `WHERE`. Vai até a próxima vírgula de nível zero. |
 | `max N` | Teto de linhas afetadas por escrita (padrão 50). Acima disso: rollback e bloqueio. |
 | `limit N` | Teto de linhas por query para a tabela (menor que o global). |
-| `mask(col: modo)` | Máscara aplicada no resultado. Modos: `partial` (jo***@dominio), `redact` (***), `hash` (estável só na execução), `email` (só o domínio), `last4` (4 últimos caracteres), `month` (data vira AAAA-MM), `bucket N` (número vira faixa de N), `pseudonym` (estável entre execuções, chave local). Coluna mascarada só aparece nua na lista do SELECT; `hash` e `pseudonym` também podem ir em `GROUP BY`/`DISTINCT`. |
+| `mask(col: modo)` | Máscara aplicada no resultado. Modos: `partial` (jo***@dominio), `redact` (***), `hash` (estável só na execução), `email` (só o domínio), `last4` (4 últimos caracteres), `month` (data vira AAAA-MM), `bucket N` (número vira faixa de N), `pseudonym` (estável entre execuções, chave local). Coluna mascarada só aparece nua na lista do SELECT; `hash` e `pseudonym` também podem ir em `GROUP BY`/`DISTINCT`. O que a máscara já mostra pode ser usado em qualquer posição: o domínio de `email` com `split_part(col, '@', 2)` e o ano, trimestre ou mês de `month` com `date_trunc`/`extract`. |
 | `deny` / sem regra | A tabela não existe para a IA. `pg_*`, `pg_catalog` e `information_schema` são sempre bloqueados. |
 | `## texto` | Descrição da tabela na skill e no `describe` (precisa estar logo acima da regra). |
 | linha começando com espaço | Continua a regra anterior. |
@@ -117,8 +117,9 @@ Exemplo completo em [examples/vendas.crivo](examples/vendas.crivo) e casos de te
 | `rate N/min` · `quota N rows/day` | Execuções por minuto e linhas por dia. Contam pela auditoria local: é trava contra IA em loop, não fronteira de segurança. |
 | `approval writes` | O `exec` real só deixa a escrita pendente; uma pessoa executa com `vendas approve <id>` no terminal. |
 | `audit syslog` | Além do arquivo, manda cada linha de auditoria ao syslog (macOS e Linux). |
+| `export N rows` | Liga `vendas export "<SELECT>" -o arquivo.csv`: a mesma leitura de `query`, com teto de N linhas em vez do `limit`, gravada em CSV (caminho relativo, sem sobrescrever sem `--force`). As linhas contam na `quota`. Não existe no MCP. |
 
-Precedência: nome exato vence padrão; entre padrões, o de maior prefixo literal; empate, `deny` vence. As diretivas novas (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`) não podem ser nome de tabela.
+Precedência: nome exato vence padrão; entre padrões, o de maior prefixo literal; empate, `deny` vence. As diretivas novas (`expires`, `cost`, `rate`, `quota`, `approval`, `audit`, `query`, `export`) não podem ser nome de tabela.
 
 ## Comandos
 
@@ -128,7 +129,7 @@ Precedência: nome exato vence padrão; entre padrões, o de maior prefixo liter
 crivo test examples/vendas.crivo --schema-sql testdata/schema.sql -f examples/queries.sql
 ```
 
-**Binário gerado (`vendas`, modo base):** `policy`, `tables`, `describe <tabela> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [consulta] [p=valor...]`, `approve|pending|reject` (com `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f arquivo.sql`. O modo é decidido pelo slot embutido; não há flag nem variável que troque de modo, então a IA não alcança `build` por um binário gerado.
+**Binário gerado (`vendas`, modo base):** `policy`, `tables`, `describe <tabela> [--sample N]`, `query "<sql>"`, `explain "<sql>"`, `exec "<sql>" [--dry-run]`, `run [consulta] [p=valor...]`, `export "<sql>" -o arquivo.csv` (com `export N rows`), `approve|pending|reject` (com `approval writes`), `audit [--since 24h] [--decision ...] [--command ...]`, `skill [install|vscode|mcp]`, `refresh`, `mcp [--allow-exec]`. Flags: `--format tsv|json|table|markdown`, `--json-errors`, `-f arquivo.sql`. O modo é decidido pelo slot embutido; não há flag nem variável que troque de modo, então a IA não alcança `build` por um binário gerado.
 
 Códigos de saída: `0` sucesso, `1` bug, `2` barrado pelo Crivo (inclusive teto de custo, `rate` e `quota`), `3` SQL inválido, `4` erro do banco, `5` configuração, segredo ausente ou política vencida, `6` escrita pendente de aprovação.
 

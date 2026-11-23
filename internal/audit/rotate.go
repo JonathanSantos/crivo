@@ -113,7 +113,7 @@ func Usage(name string, now time.Time) (lastMinute int, rowsToday int64, err err
 
 func counts(cmd string) bool {
 	switch strings.TrimPrefix(cmd, "mcp:") {
-	case "query", "explain", "exec", "run", "approve", "describe-sample":
+	case "query", "explain", "exec", "run", "approve", "describe-sample", "export":
 		return true
 	}
 	return false

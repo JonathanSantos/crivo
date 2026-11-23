@@ -43,7 +43,7 @@ func TestLimits(t *testing.T) {
 func TestFooters(t *testing.T) {
 	cases := map[string]string{
 		ReadFooter(1, false, false): "1 linha",
-		ReadFooter(20, true, true):  "20 linhas (LIMIT da query; pode haver mais)",
+		ReadFooter(20, true, true):  "20 linhas (cortado no LIMIT da query: há mais linhas)",
 		WriteFooter(3, false):       "3 linhas afetadas",
 		WriteFooter(3, true):        "3 linhas seriam afetadas (dry-run, rollback)",
 		WriteFooter(1, true):        "1 linha seria afetada (dry-run, rollback)",

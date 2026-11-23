@@ -21,6 +21,11 @@ Até a v0.1.4, o único controle além do guard era o clique de aprovação do V
 
 8. **Nomes de coluna como o Postgres** (achado pelo fuzz). `NATURAL JOIN` com uma coluna que o guard nomeava `?column?` e o Postgres chamava de `coalesce` comparava uma coluna mascarada sem checagem. O guard segue o FigureColname do Postgres e recusa `NATURAL JOIN` com coluna sem nome.
 
+9. **Simulação com agentes** (cinco cenários com Sonnet 5.5, ver o relatório da sessão). Viraram mudanças:
+   - **`export N rows`:** caminho legítimo para resultados grandes, com teto próprio, CSV, cota e auditoria. A skill passa a dizer que juntar faixas da mesma consulta para passar do teto é contornar o limite.
+   - **Derivações visíveis:** o domínio de uma coluna com máscara `email` (`split_part(col, '@', 2)`) e o ano, trimestre ou mês de uma com máscara `month` (`date_trunc`, `extract`, `date_part`) podem filtrar, juntar e agrupar, porque só revelam o que a máscara já mostra. Para isso, a máscara `email` passou a cortar no primeiro `@`, igual ao `split_part`. Um teste de integração confere, linha a linha, que a derivação é igual à saída mascarada.
+   - **Textos:** a pendência diz "nada foi gravado ainda" e quem aprova; o rodapé do `LIMIT` diz que há mais linhas; a lista de consultas prontas mostra o SQL; a skill fala de pseudônimo e de pressão do usuário.
+
 ## Fora do escopo
 
 Assinatura de código (precisa de certificados), winget (PR externo) e Windows arm64 (toolchain cgo não verificado no runner ARM).

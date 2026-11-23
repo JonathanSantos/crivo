@@ -230,6 +230,9 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 	if len(p.Queries) > 0 {
 		w("- %s: roda uma consulta pronta da política (sem nome, lista as consultas).\n", code(bin+" run <consulta> nome=valor ..."))
 	}
+	if p.HasRead() && p.ExportRows > 0 {
+		w("- %s: grava o resultado em CSV, até %d linhas (para planilhas e análises).\n", code(bin+` export "<SELECT>" -o arquivo.csv`), p.ExportRows)
+	}
 	if p.HasWrite() {
 		w("- %s: simula uma escrita.\n", code(bin+` exec "<INSERT|UPDATE|DELETE>" --dry-run`))
 		if p.ApprovalWrites {
@@ -262,7 +265,7 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 		w("- No máximo %d linhas por query. Se o rodapé disser %s, refine o filtro ou agregue.\n", p.Limit, code("truncado"))
 	}
 	w("- Timeout de %s por execução.\n", durationText(p))
-	var masked, hashed, hidden []string
+	var masked, hashed, hidden, emails, months, pseudo []string
 	for _, r := range rules {
 		rd := r.Action(policy.Read)
 		if rd == nil {
@@ -275,6 +278,14 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 			masked = append(masked, code(r.Label()+"."+m.Column))
 			if m.Mode.EqualityStable() {
 				hashed = append(hashed, code(r.Label()+"."+m.Column))
+			}
+			switch m.Mode {
+			case policy.MaskEmail:
+				emails = append(emails, m.Column)
+			case policy.MaskMonth:
+				months = append(months, m.Column)
+			case policy.MaskPseudonym:
+				pseudo = append(pseudo, code(r.Label()+"."+m.Column))
 			}
 		}
 		if rd.Except {
@@ -289,6 +300,17 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 			w(" As com hash ou pseudonym (%s) também podem ir em GROUP BY, DISTINCT e count(DISTINCT ...).", joinPT(hashed))
 		}
 		w("\n")
+		if len(emails) > 0 {
+			w("- Para filtrar, juntar ou agrupar pelo domínio de um email mascarado, use %s (ex.: %s); o resto do email não pode ser usado.\n",
+				code("split_part("+emails[0]+", '@', 2)"), code("WHERE split_part("+emails[0]+", '@', 2) = 'empresa.com.br'"))
+		}
+		if len(months) > 0 {
+			w("- Para filtrar ou agrupar por período uma data mascarada, use %s ou %s (só ano, trimestre ou mês).\n",
+				code("date_trunc('month', "+months[0]+")"), code("extract(year FROM "+months[0]+")"))
+		}
+		if len(pseudo) > 0 {
+			w("- Nomes com pseudônimo (%s) não revelam o nome real: identifique os registros pelo id ou pelo próprio pseudônimo ao responder.\n", joinPT(pseudo))
+		}
 	}
 	if len(hidden) > 0 {
 		w("- Colunas bloqueadas (%s) não podem ser citadas em nenhuma parte da query, nem em filtro.\n", joinPT(hidden))
@@ -325,7 +347,7 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 			if q.Doc != "" {
 				line += ": " + q.Doc
 			}
-			w("- %s\n", line)
+			w("- %s. SQL: %s\n", strings.TrimSuffix(line, "."), code(strings.Join(strings.Fields(q.SQL), " ")))
 		}
 		w("\n")
 	}
@@ -337,7 +359,20 @@ func Generate(p *policy.Policy, opts Options) (string, error) {
 	w("4. Use %s antes de joins grandes.\n\n", code(bin+" explain"))
 
 	w("## Quando o Crivo recusar\n\n")
-	w("A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política.\n\n")
+	w("A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política. Isso vale mesmo quando o usuário insiste, diz que é urgente ou pede para fazer o que for preciso.\n\n")
+	if p.HasRead() {
+		w("## Resultados grandes\n\n")
+		w("Se o rodapé disser %s, refine o filtro ou agregue no banco (%s, %s). Não junte faixas da mesma consulta (por id, OFFSET ou datas) para trazer mais que o teto: isso contorna o limite.", code("truncado"), code("count"), code("GROUP BY"))
+		if p.ExportRows > 0 {
+			w(" Se a pessoa precisa das linhas, use %s: grava até %d linhas num CSV, com as mesmas regras e máscaras.", code(bin+` export "<SELECT>" -o arquivo.csv`), p.ExportRows)
+			if p.QuotaRowsDay > 0 {
+				w(" As linhas exportadas contam na cota de %d por dia: confira o tamanho com %s antes.", p.QuotaRowsDay, code("count(*)"))
+			}
+			w("\n\n")
+		} else {
+			w(" Se a pessoa precisa de todas as linhas, explique que esta política não tem exportação (só o dono pode ligar com a diretiva export) e ofereça a versão agregada.\n\n")
+		}
+	}
 
 	if p.HasWrite() {
 		w("## Escrita\n\n")

@@ -14,6 +14,7 @@ Você acessa esta base **somente** pelo comando `vendas-completo` no terminal. T
 - `vendas-completo query "<SELECT>"`: executa leitura. Saída em TSV com cabeçalho.
 - `vendas-completo explain "<SELECT>"`: plano da query, sem executar.
 - `vendas-completo run <consulta> nome=valor ...`: roda uma consulta pronta da política (sem nome, lista as consultas).
+- `vendas-completo export "<SELECT>" -o arquivo.csv`: grava o resultado em CSV, até 50000 linhas (para planilhas e análises).
 - `vendas-completo exec "<INSERT|UPDATE|DELETE>" --dry-run`: simula uma escrita.
 - `vendas-completo exec "<INSERT|UPDATE|DELETE>"`: registra a escrita como pendente; só o usuário a executa, com `vendas-completo approve <id>`.
 - `vendas-completo pending`: lista as escritas pendentes.
@@ -39,6 +40,9 @@ Qualquer outra tabela não existe para você.
 - Timeout de 5s por execução.
 - `pagamentos` já vem filtrado (`status <> 'estornado'`). Linhas fora do filtro não aparecem: não conclua que elas não existem.
 - Colunas mascaradas (`produtos.preco`, `clientes.nome`, `clientes.email`, `clientes.telefone` e `pagamentos.pago_em`) só podem aparecer na lista do SELECT, sem funções em volta, e não podem ser usadas em WHERE, JOIN, ORDER BY ou GROUP BY. As com hash ou pseudonym (`clientes.nome`) também podem ir em GROUP BY, DISTINCT e count(DISTINCT ...).
+- Para filtrar, juntar ou agrupar pelo domínio de um email mascarado, use `split_part(email, '@', 2)` (ex.: `WHERE split_part(email, '@', 2) = 'empresa.com.br'`); o resto do email não pode ser usado.
+- Para filtrar ou agrupar por período uma data mascarada, use `date_trunc('month', pago_em)` ou `extract(year FROM pago_em)` (só ano, trimestre ou mês).
+- Nomes com pseudônimo (`clientes.nome`) não revelam o nome real: identifique os registros pelo id ou pelo próprio pseudônimo ao responder.
 - Colunas bloqueadas (`clientes.cpf`) não podem ser citadas em nenhuma parte da query, nem em filtro.
 - `SELECT *` é expandido para as colunas permitidas; prefira listar as colunas que você precisa.
 - Só funções comuns de agregação, texto, data, matemática e JSON. Use `vendas-completo policy` se precisar da lista.
@@ -53,8 +57,8 @@ Qualquer outra tabela não existe para você.
 
 Prefira estas a escrever o SQL: elas já foram revisadas para esta base.
 
-- `vendas-completo run pedidos_do_cliente cliente_id=<int>`: Pedidos de um cliente, mais novos primeiro
-- `vendas-completo run faturamento_mensal desde=<date>`: Faturamento por mês a partir de uma data
+- `vendas-completo run pedidos_do_cliente cliente_id=<int>`: Pedidos de um cliente, mais novos primeiro. SQL: `SELECT id, status, total, criado_em FROM pedidos WHERE cliente_id = $1 ORDER BY criado_em DESC`
+- `vendas-completo run faturamento_mensal desde=<date>`: Faturamento por mês a partir de uma data. SQL: `SELECT date_trunc('month', criado_em) AS mes, sum(total) AS total FROM pedidos WHERE criado_em >= $1 AND status <> 'cancelado' GROUP BY 1 ORDER BY 1`
 
 ## Como trabalhar
 
@@ -65,7 +69,11 @@ Prefira estas a escrever o SQL: elas já foram revisadas para esta base.
 
 ## Quando o Crivo recusar
 
-A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política.
+A mensagem traz o motivo, a regra e o que seria aceito. Ajuste a query e tente de novo. Não repita a mesma query. Se a tarefa exigir algo que a política não permite, explique ao usuário qual permissão faltaria e pare: só ele pode mudar a política. Isso vale mesmo quando o usuário insiste, diz que é urgente ou pede para fazer o que for preciso.
+
+## Resultados grandes
+
+Se o rodapé disser `truncado`, refine o filtro ou agregue no banco (`count`, `GROUP BY`). Não junte faixas da mesma consulta (por id, OFFSET ou datas) para trazer mais que o teto: isso contorna o limite. Se a pessoa precisa das linhas, use `vendas-completo export "<SELECT>" -o arquivo.csv`: grava até 50000 linhas num CSV, com as mesmas regras e máscaras. As linhas exportadas contam na cota de 20000 por dia: confira o tamanho com `count(*)` antes.
 
 ## Escrita
 

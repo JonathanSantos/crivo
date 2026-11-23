@@ -81,9 +81,11 @@ func (m *Masker) ApplyMask(pm policy.Mask, v string) string {
 	return "***"
 }
 
-// Email mantém só o domínio: ana@empresa.com.br → ***@empresa.com.br.
+// Email mantém só o que vem depois do primeiro @: ana@empresa.com.br →
+// ***@empresa.com.br. É o primeiro (e não o último) para bater com
+// split_part(email, '@', 2), que o guard aceita como derivação visível.
 func Email(v string) string {
-	i := strings.LastIndexByte(v, '@')
+	i := strings.IndexByte(v, '@')
 	if i <= 0 || i == len(v)-1 {
 		return "***"
 	}

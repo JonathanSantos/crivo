@@ -87,3 +87,21 @@ func TestNewMaskModes(t *testing.T) {
 		}
 	}
 }
+
+func TestExportDirective(t *testing.T) {
+	p, diags := Parse("x.crivo", gateHeader+"export 50000 rows\npedidos read\n")
+	if diags.HasErrors() || p.ExportRows != 50000 {
+		t.Fatalf("export: %d %s", p.ExportRows, diags.Error())
+	}
+	for line, want := range map[string]string{
+		"export 0 rows":    "export precisa do teto de linhas",
+		"export 100":       `export precisa terminar com "rows"`,
+		"export x rows":    "export precisa do teto",
+		"export 10 linhas": `export precisa terminar com "rows"`,
+	} {
+		_, diags := Parse("x.crivo", gateHeader+line+"\npedidos read\n")
+		if !diags.HasErrors() || !strings.Contains(diags.Error(), want) {
+			t.Errorf("%q: esperava %q, veio %q", line, want, diags.Error())
+		}
+	}
+}
